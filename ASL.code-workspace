@@ -1,0 +1,17 @@
+{
+  "folders": [
+    {
+      "name": "ASL",
+      "path": "."
+    },
+    {
+      "name": "sign_mnist_train",
+      "path": "../../Downloads/archive/sign_mnist_train"
+    },
+    {
+      "name": "sign_mnist_test",
+      "path": "../../Downloads/archive/sign_mnist_test"
+    }
+  ],
+  "settings": {}
+}
