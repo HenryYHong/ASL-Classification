@@ -121,7 +121,12 @@ class Segmenter:
             self.v_bar = 0.0
             self.sigma = 0.0
             return
-        tail = list(self.buf)[-6:]
+        # Smoothing window in SECONDS, not frames: a fixed sample count is a different amount
+        # of smoothing at every frame rate, and an under-smoothed v_bar never holds
+        # V_MOVE_ARMED long enough to trigger, so nothing is ever detected.
+        tail = self._since(self.buf[-1].t - self.th.V_SMOOTH_WINDOW)
+        if len(tail) < 2:
+            tail = list(self.buf)[-2:]
         t = np.array([f.t for f in tail])
         m = np.stack([f.m for f in tail])
         S = np.array([f.S for f in tail])

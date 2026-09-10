@@ -192,21 +192,25 @@ def moving_average_time(values, times, window_s):
     return out
 
 
-def palm_speed(centres, scales, times, smooth_n=5):
-    """Palm-centre speed in palm-widths per second, smoothed over `smooth_n` samples."""
+def palm_speed(centres, scales, times, window_s=0.33):
+    """Palm-centre speed in palm-widths per second, smoothed over `window_s` SECONDS.
+
+    The window is in seconds, not samples, because a sample count is a different amount of
+    smoothing at every frame rate. A 5-sample average is 0.33 s on 15 fps footage and 0.17 s at
+    30 fps; the under-smoothed signal crosses the motion threshold constantly without ever
+    holding it, so the rising-edge trigger never fires and no gesture is ever detected. That is
+    not a tuning question -- it silently breaks the detector on any camera faster than the one
+    the thresholds were calibrated on.
+    """
     centres = np.asarray(centres, dtype=np.float64)
     times = np.asarray(times, dtype=np.float64)
     scales = np.asarray(scales, dtype=np.float64)
     if len(centres) < 2:
         return np.zeros(len(centres))
-    dt = np.diff(times)
-    dt = np.maximum(dt, 1e-6)
+    dt = np.maximum(np.diff(times), 1e-6)
     step = np.linalg.norm(np.diff(centres, axis=0), axis=-1) / (scales[1:] * dt)
     v = np.concatenate([[0.0], step])
-    if smooth_n > 1:
-        kern = np.ones(smooth_n) / smooth_n
-        v = np.convolve(v, kern, mode="same")
-    return v
+    return moving_average_time(v, times, window_s)
 
 
 def resample_arclength(path, k=K_RESAMPLE):

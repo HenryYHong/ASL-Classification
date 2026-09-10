@@ -22,6 +22,15 @@ class Thresholds:
     V_MOVE_ARMED: float = 1.30      # p99; low is safe because a rising edge is also required
     V_MOVE_ARMED_SUSTAIN: float = 0.13   # seconds the crossing must persist (jitter rejection)
     V_MOVE_UNARMED: float = 2.10    # archive max 2.028; zero false starts at this value
+    V_SMOOTH_WINDOW: float = 0.33   # SECONDS of smoothing behind v_bar. Was a 5-SAMPLE average,
+                                    # which is a different amount of smoothing at every frame
+                                    # rate: 0.33 s on the 15 fps archive these thresholds were
+                                    # calibrated on, but 0.17 s at 30 fps. The under-smoothed
+                                    # signal oscillates across V_MOVE_ARMED and never holds it
+                                    # for V_MOVE_ARMED_SUSTAIN, so no track ever starts. Measured
+                                    # on 30 fps footage: 46-81% of frames above the threshold,
+                                    # zero sustained rising edges. 0.33 s reproduces the archive
+                                    # calibration exactly while making v_bar frame-rate invariant.
 
     # --- shape stability, palm units, vs the TRAILING 0.4 s median shape ----------------
     # Measured on the archive: p95 = 0.120, p99 = 0.204.
@@ -97,6 +106,16 @@ class Thresholds:
 
 
 #: Constants that cannot be derived from held-sign footage and are currently educated guesses.
-NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN")
+NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN", "V_SMOOTH_WINDOW")
+
+# V_SMOOTH_WINDOW is on that list for a reason worth stating. 0.33 s is what the archive
+# effectively used at 15 fps, so it reproduces the calibration exactly -- but held signs cannot
+# say whether it is right for a GESTURE. Smoothing suppresses the jitter that causes spurious
+# triggers, and also blunts the onset of a real one: raising it from an effective 0.17 s to
+# 0.33 s on 19 minutes of third-party video took candidate events from 15 to 11, recovering a Z
+# that had been undetectable while losing several J candidates. Both directions are real. The
+# window and V_MOVE_ARMED must be swept together against labelled J/Z footage, choosing the pair
+# that maximises recall at a fixed false-fire rate. Until then this is the frame-rate-invariant
+# choice, not the tuned one.
 
 DEFAULT = Thresholds()

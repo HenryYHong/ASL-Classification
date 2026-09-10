@@ -33,6 +33,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
+from thresholds import DEFAULT as TH_DEFAULT
 from thresholds import Thresholds, DEFAULT, NEEDS_GESTURE_DATA
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -124,7 +125,7 @@ def held_sign_signals():
 
         # palm_speed pads a leading 0.0 so its output aligns with the frames; that zero is a
         # placeholder, not a measured speed, and the 5-sample smoothing spreads it. Drop it.
-        v_all.append(F.palm_speed(m, S, t, smooth_n=5)[1:])
+        v_all.append(F.palm_speed(m, S, t, window_s=TH_DEFAULT.V_SMOOTH_WINDOW)[1:])
         sigma_all.append(F.rolling_shape_sigma(F.shape42(P), t, DEFAULT.SHAPE_WINDOW))
 
         for i in range(len(t)):
@@ -309,7 +310,7 @@ def _phase(cap, hands, drawer, prompt, seconds, countdown=2.0):
 
 def _phase_signals(times, P):
     m, S = F.palm_centre(P), F.palm_scale(P)
-    v = F.palm_speed(m, S, times, smooth_n=5)[1:]      # same leading-placeholder drop as offline
+    v = F.palm_speed(m, S, times, window_s=TH_DEFAULT.V_SMOOTH_WINDOW)[1:]      # same leading-placeholder drop as offline
     sigma = F.rolling_shape_sigma(F.shape42(P), times, DEFAULT.SHAPE_WINDOW)
     return v, sigma
 
