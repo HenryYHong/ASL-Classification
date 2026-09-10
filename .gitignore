@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Landmarks derived from third-party footage. Kept out of the repo because the source
+# videos carry their own licences; see temporal/SOURCES.md for how to regenerate it.
+temporal/external_clips.npz
+
+# Your own recordings and the models trained from them ARE meant to be committed --
+# collect_motion.py stores landmarks rather than JPEGs precisely so that stays cheap
+# (a few hundred KB, against the 650 MB of images in RandomForest/data).

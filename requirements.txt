@@ -1,0 +1,22 @@
+# Pinned because the versions matter, not as a formality.
+#
+# mediapipe 1.0 REMOVED the mp.solutions namespace entirely. A fresh `pip install mediapipe`
+# today therefore breaks CNN/ASL_Detection.ipynb and RandomForest/Mediapipe.ipynb, which both
+# call mp.solutions.hands, with an AttributeError rather than anything self-explanatory.
+# 0.10.18 is the version the notebooks were originally run under.
+mediapipe==0.10.18
+
+# mediapipe 0.10.x is built against the numpy 1.x ABI.
+numpy==1.26.4
+
+opencv-python==4.11.0.86
+scikit-learn==1.9.0
+
+# Setup:
+#   python3.11 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+#
+# Python 3.11 specifically: mediapipe 0.10.18 publishes no wheels for 3.12+ on macOS arm64.
+#
+# Note on the committed models: RandomForest/model.p was pickled under scikit-learn 1.3.0 and
+# raises InconsistentVersionWarning when unpickled here. It still loads and predicts.
+# temporal/model_static.p is written by this environment and does not.
