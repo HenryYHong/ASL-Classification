@@ -22,6 +22,7 @@ crossed the trigger. That is worth knowing before training, not after.
     ../.venv/bin/python temporal/label_events.py --clips path/to/motion_clips.npz
 """
 import argparse
+import json
 import os
 import sys
 from collections import Counter
@@ -107,6 +108,7 @@ def main():
     npz = np.load(args.clips, allow_pickle=True)
     clips, stamps, labels = list(npz["clips"]), list(npz["stamps"]), list(npz["labels"])
     handed = list(npz["handed"]) if "handed" in npz else [None] * len(clips)
+    prompts = list(npz["prompts"]) if "prompts" in npz else [""] * len(clips)
     sessions = list(npz["sessions"]) if "sessions" in npz else ["S1"] * len(clips)
     signers = list(npz["signers"]) if "signers" in npz else ["signer1"] * len(clips)
 
@@ -126,6 +128,39 @@ def main():
     per_label = {}
     for i, (clip, ts, lab) in enumerate(zip(clips, stamps, labels)):
         lab = str(lab).strip().upper()
+
+        if lab == "CONTINUOUS":
+            # One unbroken take, prompted on a rhythm. Every event is assigned to whichever
+            # prompted item its ONSET falls inside: an event beginning in a GO window is that
+            # item's letter, and one beginning in a REST gap is a genuine negative -- the hand
+            # was moving and no letter was being signed, which is precisely a MOVE example.
+            items = json.loads(str(prompts[i])) if str(prompts[i]) else []
+            spans = harvest(np.asarray(clip), np.asarray(ts), handed[i], th, wh[i][0], wh[i][1])
+            got = Counter()
+            for sp in spans:
+                t0 = float(sp["times"][0])
+                it = next((I for I in items if I["park"][0] <= t0 < I["rest"][1]), None)
+                if it is None:
+                    use, gid = "MOVE", -1
+                elif t0 >= it["rest"][0] or it["label"] == "NONE":
+                    use, gid = "MOVE", it["index"]
+                else:
+                    use, gid = it["label"], it["index"]
+                    got[it["index"]] += 1
+                if use in ("J", "Z") and sp["arm"] != use:
+                    use = "MOVE"      # armed under the other gate; that is what runtime would score
+                try:
+                    feat = F.event_features(sp["times"], sp["P"], sp["arm"])
+                except ValueError:
+                    continue
+                X.append(feat); y.append(use)
+                clip_ids.append(i * 1000 + (gid if gid >= 0 else 999))
+                sess_out.append(str(sessions[i])); signer_out.append(str(signers[i]))
+            for I in items:
+                if I["label"] in ("J", "Z"):
+                    per_label.setdefault(I["label"], Counter())[got.get(I["index"], 0)] += 1
+            continue
+
         cls = LABEL_TO_CLASS.get(lab)
         if cls is None:
             continue

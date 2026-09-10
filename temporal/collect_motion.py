@@ -30,6 +30,7 @@ Usage
 Controls: SPACE starts the next clip, R redoes the previous one, Q quits and saves.
 """
 import argparse
+import json
 import os
 import time
 
@@ -164,6 +165,118 @@ def record_one_clip(cap, hands, drawer, label, clip_idx, n_clips, duration, coun
             np.array(hands_lr))
 
 
+def build_schedule(n_j, n_z, n_none, park_s, go_s, rest_s, lead_s):
+    """Alternate J, Z and near-miss negatives on a fixed rhythm.
+
+    Each item is three phases, and the PARK phase is the point of the whole design: a track
+    only arms on a rising edge out of a parked launch pose, so a recording made without a
+    deliberate pause before each gesture produces nothing the segmenter can cut. Nineteen
+    minutes of fluent third-party video yielded 11 usable events for exactly this reason.
+
+    REST is not dead time. The hand is moving but no letter is being signed, so whatever the
+    segmenter cuts there is a true negative, collected for free.
+    """
+    order = []
+    pattern = ["J", "Z", "J", "Z", "NONE"]
+    left = {"J": n_j, "Z": n_z, "NONE": n_none}
+    i = 0
+    while any(v > 0 for v in left.values()):
+        lab = pattern[i % len(pattern)]
+        i += 1
+        if left[lab] <= 0:
+            continue
+        left[lab] -= 1
+        order.append(lab)
+
+    items, t = [], float(lead_s)
+    for k, lab in enumerate(order):
+        items.append({"label": lab, "index": k,
+                      "park": [t, t + park_s],
+                      "go": [t + park_s, t + park_s + go_s],
+                      "rest": [t + park_s + go_s, t + park_s + go_s + rest_s]})
+        t += park_s + go_s + rest_s
+    return items, t
+
+
+PHASE_TEXT = {
+    "J": ("PARK: hold an I, freeze", "GO: trace the J hook"),
+    "Z": ("PARK: hold a D / index point, freeze", "GO: draw the Z"),
+    "NONE": ("PARK: hold the pose, freeze", "GO: MOVE it, but do NOT sign the letter"),
+}
+
+
+def record_continuous(cap, hands, drawer, args, probe):
+    """One unbroken take. Returns (landmarks, stamps, handedness, schedule) or None."""
+    mp_hands = mp.solutions.hands
+    items, total = build_schedule(args.clips, args.clips, max(1, args.clips // 2),
+                                  args.park, args.go, args.rest, args.lead)
+    print(f"schedule: {len(items)} items, {total:.0f}s "
+          f"({sum(i['label']=='J' for i in items)} J, {sum(i['label']=='Z' for i in items)} Z, "
+          f"{sum(i['label']=='NONE' for i in items)} near-miss)")
+
+    frames, stamps, handed = [], [], []
+    t0 = time.perf_counter()
+    while True:
+        t = time.perf_counter() - t0
+        if t >= total:
+            break
+        ok, frame = cap.read()
+        if not ok:
+            break
+        # Never flip the array MediaPipe sees; flipping inverts the handedness label.
+        res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if res.multi_hand_landmarks:
+            hand = res.multi_hand_landmarks[0]
+            frames.append([(p.x, p.y, p.z) for p in hand.landmark])
+            lr = "Unknown"
+            if res.multi_handedness:
+                lr = res.multi_handedness[0].classification[0].label
+            handed.append(lr)
+            drawer.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
+        else:
+            frames.append([(np.nan, np.nan, np.nan)] * 21)
+            handed.append("None")
+        stamps.append(t)
+
+        cur = next((it for it in items if it["park"][0] <= t < it["rest"][1]), None)
+        disp = cv2.flip(frame, 1)
+        if cur is None:
+            left = items[0]["park"][0] - t if t < items[0]["park"][0] else 0.0
+            draw_banner(disp, [("GET READY", 1.4, 4),
+                               (f"starting in {left:.0f}s", 0.9, 2),
+                               ("hand in frame, well lit, filling ~1/3 of the height", 0.6, 2)],
+                        (0, 200, 255))
+        else:
+            park_txt, go_txt = PHASE_TEXT[cur["label"]]
+            if t < cur["park"][1]:
+                phase, txt, col = "PARK", park_txt, (0, 200, 255)
+                bar = (t - cur["park"][0]) / max(args.park, 1e-6)
+            elif t < cur["go"][1]:
+                phase, txt, col = "GO", go_txt, (0, 0, 255)
+                bar = (t - cur["go"][0]) / max(args.go, 1e-6)
+            else:
+                phase, txt, col = "REST", "relax - hand down or still", (120, 120, 120)
+                bar = (t - cur["rest"][0]) / max(args.rest, 1e-6)
+            done = sum(1 for it in items if it["rest"][1] <= t)
+            draw_banner(disp, [
+                (f"{cur['label']}   {phase}", 1.5, 4),
+                (txt, 0.75, 2),
+                (f"item {cur['index']+1}/{len(items)}   {done} done   {total-t:.0f}s left", 0.6, 2),
+            ], col)
+            w = disp.shape[1] - 40
+            cv2.rectangle(disp, (20, disp.shape[0]-46), (20+int(min(bar,1.0)*w), disp.shape[0]-22), col, -1)
+        cv2.imshow("collect_motion", disp)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            print("aborted by user; saving what was recorded")
+            items = [it for it in items if it["rest"][1] <= t]
+            break
+
+    if len(frames) < 10:
+        return None
+    return (np.array(frames, dtype=np.float32), np.array(stamps, dtype=np.float32),
+            np.array(handed), items)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, default=0,
@@ -172,6 +285,15 @@ def main():
     ap.add_argument("--clips", type=int, default=40, help="clips per class")
     ap.add_argument("--duration", type=float, default=2.0, help="seconds per clip")
     ap.add_argument("--countdown", type=float, default=2.5)
+    ap.add_argument("--continuous", action="store_true",
+                    help="record ONE unbroken take, prompting J / Z / near-miss on a fixed "
+                         "rhythm instead of one clip per keypress. Each item is PARK, GO, REST; "
+                         "the PARK phase is what lets the segmenter arm at all, and the REST "
+                         "gaps yield true negatives for free.")
+    ap.add_argument("--park", type=float, default=1.2, help="continuous: seconds frozen before signing")
+    ap.add_argument("--go", type=float, default=1.8, help="continuous: seconds to perform the sign")
+    ap.add_argument("--rest", type=float, default=1.2, help="continuous: seconds to relax between items")
+    ap.add_argument("--lead", type=float, default=10.0, help="continuous: lead-in before the first item")
     ap.add_argument("--session", default="S1",
                     help="capture session tag; the train/test split is BY SESSION, so this is "
                          "what makes an honest generalization number possible later")
@@ -188,13 +310,14 @@ def main():
     print(f"camera {args.camera} ok, frame {probe.shape[1]}x{probe.shape[0]}")
 
     # Existing clips are kept, so recording can be done across several sessions.
-    clips, labels, stamps, handed, sessions, signers = [], [], [], [], [], []
+    clips, labels, stamps, handed, sessions, signers, prompts = [], [], [], [], [], [], []
     if os.path.exists(args.out):
         prev = np.load(args.out, allow_pickle=True)
         clips = list(prev["clips"])
         labels = list(prev["labels"])
         stamps = list(prev["stamps"])
         handed = list(prev["handed"]) if "handed" in prev else [None] * len(clips)
+        prompts = list(prev["prompts"]) if "prompts" in prev else [""] * len(clips)
         sessions = list(prev["sessions"]) if "sessions" in prev else ["S1"] * len(clips)
         signers = list(prev["signers"]) if "signers" in prev else ["signer1"] * len(clips)
         print(f"resuming: {len(clips)} clips already recorded "
@@ -203,6 +326,38 @@ def main():
     mp_hands = mp.solutions.hands
     drawer = mp.solutions.drawing_utils
     aborted = False
+
+    if args.continuous:
+        with mp_hands.Hands(static_image_mode=False, max_num_hands=1,
+                            min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+            got = record_continuous(cap, hands, drawer, args, probe)
+        cap.release()
+        cv2.destroyAllWindows()
+        if got is None:
+            print("nothing recorded")
+            return
+        lm, ts, lr, items = got
+        tracked = float(np.isfinite(lm[:, 0, 0]).mean())
+        clips.append(lm); stamps.append(ts); handed.append(lr)
+        labels.append("CONTINUOUS"); prompts.append(json.dumps(items))
+        sessions.append(args.session); signers.append(args.signer)
+        np.savez_compressed(args.out,
+                            clips=as_object_array(clips),
+                            stamps=as_object_array(stamps),
+                            handed=as_object_array(handed),
+                            prompts=as_object_array(prompts),
+                            labels=np.array(labels),
+                            sessions=np.array(sessions),
+                            signers=np.array(signers),
+                            frame_size=np.array([probe.shape[1], probe.shape[0]]))
+        print(f"\nwrote {args.out}: {len(ts)} frames, {ts[-1]:.0f}s, {tracked:.0%} tracked, "
+              f"{len(items)} prompted items")
+        if tracked < 0.90:
+            print(f"WARNING: only {tracked:.0%} of frames tracked a hand. Below ~90% the "
+                  "segmenter loses tracks to detection gaps. More light, hand larger in frame.")
+        print("\nNext:")
+        print(f"  ../.venv/bin/python temporal/label_events.py --clips {args.out}")
+        return
 
     # static_image_mode=False enables MediaPipe's frame-to-frame tracking, which is both
     # faster and temporally smoother than re-detecting every frame -- and smoothness is
@@ -237,6 +392,7 @@ def main():
                         clips.pop()
                         stamps.pop()
                         handed.pop()
+                        prompts.pop()
                         sessions.pop()
                         signers.pop()
                         if dropped == label:
@@ -260,6 +416,7 @@ def main():
                 stamps.append(ts)
                 labels.append(label)
                 handed.append(lr)
+                prompts.append("")
                 sessions.append(args.session)
                 signers.append(args.signer)
                 fps = len(ts) / max(ts[-1], 1e-6)
@@ -277,6 +434,7 @@ def main():
                         clips=as_object_array(clips),
                         stamps=as_object_array(stamps),
                         handed=as_object_array(handed),
+                        prompts=as_object_array(prompts),
                         labels=np.array(labels),
                         sessions=np.array(sessions),
                         signers=np.array(signers),

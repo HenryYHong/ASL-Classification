@@ -40,7 +40,7 @@ from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
-from thresholds import DEFAULT
+from thresholds import DEFAULT, Thresholds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "motion_clips.npz")
@@ -557,6 +557,11 @@ def main():
                     help="the session cross-validation is confined to; the shipped model is "
                          "still fitted on every clip")
     ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--thresholds", default=None,
+                    help="a Thresholds json from calibrate.py. Events MUST be cut with the same "
+                         "thresholds the runtime will use: cutting training events with the "
+                         "defaults while the live demo runs calibrated ones reintroduces exactly "
+                         "the train/serve skew this pipeline exists to avoid.")
     ap.add_argument("--whole-clips", action="store_true",
                     help="train on whole recorded clips instead of segmenter-cut events. "
                          "Almost always wrong: recorded clips are longer than T_MAX, so the "
@@ -578,7 +583,10 @@ def main():
               "cannot produce events of this shape. Use this only to diagnose.\n")
         clips = load_clips(args.data, aspect, args.handedness)
     else:
-        clips = load_clips_cut(args.data, aspect, args.handedness, DEFAULT)
+        th = Thresholds.from_json(args.thresholds) if args.thresholds else DEFAULT
+        if args.thresholds:
+            print(f"cutting events with thresholds from {args.thresholds}")
+        clips = load_clips_cut(args.data, aspect, args.handedness, th)
     if not clips:
         print(f"{args.data} contains no usable clip")
         return
