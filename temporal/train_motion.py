@@ -24,6 +24,7 @@ This file writes model_motion.p and prints a report. It trains nothing until
 motion_clips.npz exists; no data is synthesised to stand in for the recording.
 """
 import argparse
+import json
 import os
 import pickle
 import sys
@@ -200,6 +201,7 @@ def load_clips_cut(path, aspect, handedness, th):
     raw_labels = _pick(d, ("labels", "label"))
     raw_handed = _pick(d, ("handed", "handedness", "hands"))
     raw_sess = _pick(d, ("sessions", "session"))
+    raw_prompts = _pick(d, ("prompts",))
     wh = _pick(d, ("frame_size", "frame_wh", "wh", "size"))
     if wh is None and aspect is None:
         raise SystemExit(f"{path} does not record the capture frame size and --aspect was not "
@@ -216,10 +218,41 @@ def load_clips_cut(path, aspect, handedness, th):
     out, stats = [], {}
     for i in range(len(raw_clips)):
         lab = str(raw_labels[i]).strip().upper()
+        handed_i = raw_handed[i] if raw_handed is not None else handedness
+        sess_i = _norm_session(raw_sess[i]) if raw_sess is not None else None
+
+        if lab == "CONTINUOUS":
+            # A prompted take: one unbroken recording whose labels come from the schedule.
+            # Each event belongs to the item its ONSET falls in; a GO window gives that item's
+            # letter, a REST gap gives a negative. Each item is its own group id so the split
+            # still partitions by gesture rather than by take -- one group per take would leave
+            # GroupKFold nothing to split.
+            items = json.loads(str(raw_prompts[i])) if raw_prompts is not None else []
+            spans = LE.harvest(np.asarray(raw_clips[i]), np.asarray(raw_stamps[i]),
+                               handed_i, th, sizes[i][0], sizes[i][1])
+            got = Counter()
+            for s in spans:
+                t0 = float(s["times"][0])
+                it = next((I for I in items if I["park"][0] <= t0 < I["rest"][1]), None)
+                if it is None:
+                    use, gid = "MOVE", 999
+                elif t0 >= it["rest"][0] or it["label"] == "NONE":
+                    use, gid = "MOVE", it["index"]
+                else:
+                    use, gid = it["label"], it["index"]
+                    got[it["index"]] += 1
+                if use in ("J", "Z") and s["arm"] != use:
+                    use = "MOVE"
+                out.append(Clip(clip_id=i * 1000 + gid, times=s["times"], P=s["P"],
+                                label=use, arm=s["arm"], session=sess_i))
+            for I in items:
+                if I["label"] in ("J", "Z"):
+                    stats.setdefault(I["label"], Counter())[got.get(I["index"], 0)] += 1
+            continue
+
         cls = LABEL_TO_CLASS.get(lab)
         if cls is None:
             continue
-        handed_i = raw_handed[i] if raw_handed is not None else handedness
         spans = LE.harvest(np.asarray(raw_clips[i]), np.asarray(raw_stamps[i]),
                            handed_i, th, sizes[i][0], sizes[i][1])
         stats.setdefault(lab, Counter())[len(spans)] += 1
@@ -228,7 +261,7 @@ def load_clips_cut(path, aspect, handedness, th):
             # would be scored under that arm, so the classifier must have seen it there.
             use = cls if (cls == "MOVE" or s["arm"] == cls) else "MOVE"
             out.append(Clip(clip_id=i, times=s["times"], P=s["P"], label=use, arm=s["arm"],
-                            session=_norm_session(raw_sess[i]) if raw_sess is not None else None))
+                            session=sess_i))
 
     print("events cut by replaying the segmenter (counts are events-per-clip):")
     for lab in sorted(stats):

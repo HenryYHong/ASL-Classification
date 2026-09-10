@@ -32,6 +32,9 @@ Controls: SPACE starts the next clip, R redoes the previous one, Q quits and sav
 import argparse
 import json
 import os
+import shutil
+import signal
+import subprocess
 import time
 
 import cv2
@@ -165,7 +168,7 @@ def record_one_clip(cap, hands, drawer, label, clip_idx, n_clips, duration, coun
             np.array(hands_lr))
 
 
-def build_schedule(n_j, n_z, n_none, park_s, go_s, rest_s, lead_s):
+def build_schedule(counts, park_s, go_s, rest_s, lead_s):
     """Alternate J, Z and near-miss negatives on a fixed rhythm.
 
     Each item is three phases, and the PARK phase is the point of the whole design: a track
@@ -176,17 +179,23 @@ def build_schedule(n_j, n_z, n_none, park_s, go_s, rest_s, lead_s):
     REST is not dead time. The hand is moving but no letter is being signed, so whatever the
     segmenter cuts there is a true negative, collected for free.
     """
+    labels = [l for l, v in counts.items() if v > 0]
+    left = {l: counts[l] for l in labels}
     order = []
-    pattern = ["J", "Z", "J", "Z", "NONE"]
-    left = {"J": n_j, "Z": n_z, "NONE": n_none}
-    i = 0
-    while any(v > 0 for v in left.values()):
-        lab = pattern[i % len(pattern)]
-        i += 1
-        if left[lab] <= 0:
-            continue
-        left[lab] -= 1
-        order.append(lab)
+    if len(labels) <= 1:
+        # One label: a straight block, no alternation. Easier to stay in rhythm, and it means
+        # the handshape never changes mid-take, which removes a source of tracking dropout.
+        for l in labels:
+            order = [l] * left[l]
+    else:
+        i = 0
+        while any(v > 0 for v in left.values()):
+            lab = labels[i % len(labels)]
+            i += 1
+            if left[lab] <= 0:
+                continue
+            left[lab] -= 1
+            order.append(lab)
 
     items, t = [], float(lead_s)
     for k, lab in enumerate(order):
@@ -196,6 +205,25 @@ def build_schedule(n_j, n_z, n_none, park_s, go_s, rest_s, lead_s):
                       "rest": [t + park_s + go_s, t + park_s + go_s + rest_s]})
         t += park_s + go_s + rest_s
     return items, t
+
+
+def speaker(enabled):
+    """Announce prompts aloud so the signer never has to look away from their own hand.
+
+    Non-blocking: the capture loop must not stall waiting on speech, or the recording drops
+    frames and the tracking rate falls, which is what starves the segmenter of events.
+    """
+    say = shutil.which("say") if enabled else None
+    if not say:
+        return lambda text: None
+
+    def _speak(text):
+        try:
+            subprocess.Popen([say, "-r", "260", text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    return _speak
 
 
 PHASE_TEXT = {
@@ -208,21 +236,51 @@ PHASE_TEXT = {
 def record_continuous(cap, hands, drawer, args, probe):
     """One unbroken take. Returns (landmarks, stamps, handedness, schedule) or None."""
     mp_hands = mp.solutions.hands
-    items, total = build_schedule(args.clips, args.clips, max(1, args.clips // 2),
-                                  args.park, args.go, args.rest, args.lead)
+    counts = {}
+    for L in args.letters:
+        L = L.strip().upper()
+        counts[L] = args.negatives if L == "NONE" else args.clips
+    items, total = build_schedule(counts, args.park, args.go, args.rest, args.lead)
     print(f"schedule: {len(items)} items, {total:.0f}s "
           f"({sum(i['label']=='J' for i in items)} J, {sum(i['label']=='Z' for i in items)} Z, "
           f"{sum(i['label']=='NONE' for i in items)} near-miss)")
+
+    # Save on SIGTERM/SIGINT rather than losing the take. Without this, stopping a run part
+    # way through discards every frame recorded so far, because the write happens at the end.
+    stop = {"now": False}
+
+    def _stop(signum, frame):
+        stop["now"] = True
+    prev_handlers = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            prev_handlers[sig] = signal.signal(sig, _stop)
+        except (ValueError, OSError):
+            pass
+
+    speak = speaker(args.speak)
+    speak(f"Get ready. Recording starts in {int(args.lead)} seconds.")
+    last_key = None
+    said_countdown = set()
 
     frames, stamps, handed = [], [], []
     t0 = time.perf_counter()
     while True:
         t = time.perf_counter() - t0
-        if t >= total:
+        if t >= total or stop["now"]:
+            if stop["now"]:
+                print(f"\ninterrupted at {t:.0f}s; keeping the {sum(1 for it in items if it['rest'][1] <= t)} "
+                      "completed items", flush=True)
+                items = [it for it in items if it["rest"][1] <= t]
             break
         ok, frame = cap.read()
         if not ok:
             break
+        if t < items[0]["park"][0]:
+            left = int(items[0]["park"][0] - t)
+            if left in (5, 3, 2, 1) and left not in said_countdown:
+                said_countdown.add(left)
+                speak(str(left))
         # Never flip the array MediaPipe sees; flipping inverts the handedness label.
         res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         if res.multi_hand_landmarks:
@@ -239,6 +297,22 @@ def record_continuous(cap, hands, drawer, args, probe):
         stamps.append(t)
 
         cur = next((it for it in items if it["park"][0] <= t < it["rest"][1]), None)
+        phase_now = None
+        if cur is not None:
+            phase_now = ("PARK" if t < cur["park"][1]
+                         else "GO" if t < cur["go"][1] else "REST")
+            key = (cur["index"], phase_now)
+            if key != last_key:
+                last_key = key
+                if phase_now == "PARK":
+                    spoken = {"J": "J", "Z": "Z", "NONE": "near miss"}[cur["label"]]
+                    speak(spoken)
+                    print(f"[{t:6.1f}s] item {cur['index']+1}/{len(items)}  {cur['label']}  PARK",
+                          flush=True)
+                elif phase_now == "GO":
+                    speak("go")
+                    print(f"[{t:6.1f}s] item {cur['index']+1}/{len(items)}  {cur['label']}  GO",
+                          flush=True)
         disp = cv2.flip(frame, 1)
         if cur is None:
             left = items[0]["park"][0] - t if t < items[0]["park"][0] else 0.0
@@ -255,7 +329,11 @@ def record_continuous(cap, hands, drawer, args, probe):
                 phase, txt, col = "GO", go_txt, (0, 0, 255)
                 bar = (t - cur["go"][0]) / max(args.go, 1e-6)
             else:
-                phase, txt, col = "REST", "relax - hand down or still", (120, 120, 120)
+                # Keeping the hand in frame is the difference between a usable take and a
+                # wasted one: dropping it means the next PARK is spent raising it again, and
+                # a track can only arm out of frames that are actually tracked. Measured on a
+                # real take, PARK tracking was 48% while GO was 95%.
+                phase, txt, col = "REST", "KEEP HAND UP in frame - just relax the shape", (120, 120, 120)
                 bar = (t - cur["rest"][0]) / max(args.rest, 1e-6)
             done = sum(1 for it in items if it["rest"][1] <= t)
             draw_banner(disp, [
@@ -271,6 +349,11 @@ def record_continuous(cap, hands, drawer, args, probe):
             items = [it for it in items if it["rest"][1] <= t]
             break
 
+    for sig, h in prev_handlers.items():
+        try:
+            signal.signal(sig, h)
+        except (ValueError, OSError):
+            pass
     if len(frames) < 10:
         return None
     return (np.array(frames, dtype=np.float32), np.array(stamps, dtype=np.float32),
@@ -290,6 +373,14 @@ def main():
                          "rhythm instead of one clip per keypress. Each item is PARK, GO, REST; "
                          "the PARK phase is what lets the segmenter arm at all, and the REST "
                          "gaps yield true negatives for free.")
+    ap.add_argument("--negatives", type=int, default=None,
+                    help="continuous: near-miss items (an I moved WITHOUT tracing a J, and the "
+                         "same for D and Z). Defaults to half the clip count. These are the "
+                         "hardest negatives and the exact false positive seen in use; setting 0 "
+                         "leaves only rest-gap motion as MOVE examples.")
+    ap.add_argument("--speak", action="store_true",
+                    help="announce each letter aloud (macOS `say`), so you can watch your hand "
+                         "instead of the screen")
     ap.add_argument("--park", type=float, default=1.2, help="continuous: seconds frozen before signing")
     ap.add_argument("--go", type=float, default=1.8, help="continuous: seconds to perform the sign")
     ap.add_argument("--rest", type=float, default=1.2, help="continuous: seconds to relax between items")
@@ -300,13 +391,25 @@ def main():
     ap.add_argument("--signer", default="signer1")
     ap.add_argument("--out", default=DEFAULT_OUT)
     args = ap.parse_args()
+    if args.negatives is None:
+        args.negatives = max(1, args.clips // 2)
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         raise SystemExit(f"could not open camera {args.camera}; try --camera 0 or --camera 1")
-    ok, probe = cap.read()
-    if not ok:
-        raise SystemExit(f"camera {args.camera} opened but returned no frame; try a different index")
+    # The first read straight after opening frequently fails on macOS while the device
+    # negotiates a format, so retry briefly before declaring the index wrong. Failing here
+    # used to send you hunting for a camera index that was already correct.
+    probe = None
+    for _ in range(30):
+        ok, probe = cap.read()
+        if ok and probe is not None:
+            break
+        time.sleep(0.1)
+    else:
+        raise SystemExit(f"camera {args.camera} opened but returned no frame after 3s; "
+                         f"try a different --camera index, or grant camera access to this "
+                         f"terminal in System Settings > Privacy & Security > Camera")
     print(f"camera {args.camera} ok, frame {probe.shape[1]}x{probe.shape[0]}")
 
     # Existing clips are kept, so recording can be done across several sessions.

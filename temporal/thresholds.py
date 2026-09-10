@@ -36,9 +36,20 @@ class Thresholds:
     # Measured on the archive: p95 = 0.120, p99 = 0.204.
     SHAPE_STABLE: float = 0.14      # p95, rounded up: below this the handshape is settled
     SHAPE_WINDOW: float = 0.40      # the trailing window sigma is measured against
-    RIGID_VETO: float = 0.45        # NEEDS-GESTURE-DATA. ~2x the archive p99. A real J/Z is a
-                                    # rigid hand carried by the arm; above this the handshape
-                                    # itself changed, so it was a transition, not a sign.
+    RIGID_VETO: float = 1.35        # CALIBRATED on 60 real J gestures: p95 of sigma_max, per the
+                                    # spec rule. The old 0.45 was extrapolated from held signs and
+                                    # rejected 90% of genuine gestures -- it was the single largest
+                                    # cause of missed J's, and it failed silently.
+                                    #
+                                    # Why it was so far out: shape42 is deliberately NOT
+                                    # rotation-normalized, because orientation is what separates P
+                                    # from K and H from U. A J hook rotates the wrist, so sigma
+                                    # rises from the hand TURNING, not from the handshape changing,
+                                    # and the veto conflates the two. 1.35 still sits 3.8x above
+                                    # the worst held sign in the archive (0.35), so it keeps
+                                    # rejecting stable-shape transitions. The principled fix is a
+                                    # rotation-invariant rigidity measure (align shapes before
+                                    # comparing); this threshold is the empirical stand-in.
 
     # --- gate arming --------------------------------------------------------------------
     GATE_ARM_FRAC: float = 0.50     # gate must hold on this fraction of the pre-onset window

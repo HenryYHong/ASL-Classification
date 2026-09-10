@@ -122,7 +122,13 @@ def j_gate(P):
     """Is this frame in a J launch pose (the 'I' handshape: pinky out, others curled)?"""
     e = extension_ratios(P)
     others = np.maximum(np.maximum(e["index"], e["mid"]), e["ring"])
-    return (e["pinky"] > 1.50) & (others < 1.30) & (thumb_pinkymcp(P) < 1.15)
+    # 1.20, not the 1.15 the archive alone suggested. Measured on a real 30-gesture take, the
+    # signer's thumb drifted from 1.10 early to 1.18 late as the hand tired, and the tighter
+    # threshold silently dropped the gate from 70% to 27% -- half the recording lost, with no
+    # error anywhere. On the archive 1.20 keeps I recall at 100% and admits a single frame of Y
+    # out of 100, which cannot itself produce a false J: arming is only the first of the rising
+    # edge, the vetoes and the classifier.
+    return (e["pinky"] > 1.50) & (others < 1.30) & (thumb_pinkymcp(P) < 1.20)
 
 
 def z_gate(P):
