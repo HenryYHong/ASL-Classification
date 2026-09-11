@@ -103,30 +103,38 @@ them; the browser reproduces the Python's arithmetic, not its accuracy.
 | | result | split |
 | --- | --- | --- |
 | Static letters, in-session | 0.968 | held-out tail of each capture burst |
-| **Static letters, leave-one-session-out** | **0.680** | train one session, test the other |
-| Motion letters {J, Z, MOVE} | 0.889 | GroupKFold over 118 independent gestures |
-| Motion, at the runtime operating point | 96% correct when it fires, 22% abstain | same |
-| False J/Z on held-out negatives | 0 | same |
+| **Static letters, leave-one-session-out** | **0.759** | `temporal/crossval_static.py`, pooled over 4,878 held-out frames |
+| — the fold that tests all 24 letters | 0.659 | hold out the archive, train on the later sessions |
+| Motion letters {J, Z, MOVE} | 0.864 | `GroupKFold(5)` over 140 independent gestures |
+| Motion, at the runtime operating point | 0.915 correct when it fires | same |
+| False J/Z on held-out negatives | 2 of 55 | same |
 | `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-**0.680 is the honest number.** The in-session figure is inflated: consecutive frames of one
-held sign are near-duplicates, so they sit on both sides of any random split. The gap is not
-noise — chasing the in-session number actively hurt, and adding absolute hand extent took it
-from 0.956 to 0.983 while *halving* cross-session accuracy, 0.520 to 0.262.
+**0.759 is the honest number**, and the 0.659 beneath it is the honest reading of the honest
+number. The in-session figure is inflated: consecutive frames of one held sign are
+near-duplicates, so they sit on both sides of any random split. The gap is not noise — chasing
+the in-session number actively hurt, and adding absolute hand extent took it from 0.956 to 0.983
+while *halving* cross-session accuracy, 0.520 to 0.262. Two of the four sessions are targeted
+re-recordings covering six and four letters, so their folds score high on a handful of
+well-separated shapes; the pooled figure counts every held-out frame once, and the fold holding
+out the 24-letter archive is the only one that tests the whole alphabet.
 
-Everything above is **one signer**, three sessions, 23,215 static frames and 700 motion events.
-Nothing here says anything about a different person's hands, and a visitor to the page is
-necessarily a different person. G, M, S and T drift most between sittings (toward H, E, E and N);
-that is a data limitation, not a threshold to tune.
+Everything above is **one signer**: four static sessions (4,878 frames, 24,390 rows after
+rotation augmentation) and two motion sessions (182 gestures, 910 rows). Nothing here says
+anything about a different person's hands, and a visitor to the page is necessarily a different
+person. G, M, S and T drift most between sittings (toward H, E, E and N); that is a data
+limitation, not a threshold to tune.
 
-The page states the 0.680 above the fold, before the camera button, for this reason.
+The page repeats these numbers directly under the video, before anyone reads a letter off it,
+for that reason.
 
-## Known issue: the export rounds split thresholds
+## Why split thresholds are exported at full precision
 
-`export_models.py` rounds each split threshold to 5 decimal places to keep `models.json` small.
-Every one of the static forest's 55,039 splits is perturbed by up to 5e-6, and a sample that
-lands inside that interval takes the other branch in that one tree.
+They were once rounded to 5 decimal places, to keep `models.json` small. Every one of the static
+forest's 55,039 splits was perturbed by up to 5e-6, and a sample landing inside that interval
+took the other branch in that one tree. The rounding is gone; this is the measurement that
+retired it, kept because it is the argument for the 0.7 MB.
 
 Measured over 1,215 probe vectors (real golden features, blends of them, and noise at four
 scales) against `sklearn.predict_proba`:
@@ -139,12 +147,16 @@ scales) against `sklearn.predict_proba`:
   exact tie (0.2650/0.2650 and 0.1725/0.1725) — at 0.17 and 0.27 probability, below
   `VOTE_PROB_FLOOR` of 0.30, so neither vote could have emitted a letter either way.
 
-So the practical effect is nil, but two claims should be stated accurately: "reproduces sklearn
-exactly" holds for the tree walk and for the 15 golden cases, not for the shipped export on
-arbitrary input; and `golden.json`'s declared probability tolerance of 1e-4 is 25x tighter than
-the export's own rounding can guarantee. If exactness matters more than 0.4 MB of gzip, drop the
-`round_to` argument in `export_models.py:flatten` — the cost is 7.97 → 8.68 MB raw, 0.88 → 1.29
-MB gzipped.
+The practical effect was nil — but "reproduces sklearn exactly" is a claim the page makes to
+visitors in its own readout, and it was true of the tree walk and the 15 golden cases while
+being false of the shipped export on arbitrary input. A self-check that can be wrong on one
+input in 170 is not a self-check. Full precision costs 7.97 → 8.49 MB raw, and buys back a
+claim that is simply true.
+
+**One operational consequence:** `golden.json` is generated from a specific `models.json`, so
+the two ship together. Deploy a new forest with an old golden file and the page opens with a
+self-check failure quoting exactly 2.5e-3 — one tree in 400 disagreeing — which looks alarming
+and means only that the reference file is stale.
 
 ## What the debug panel is for
 
