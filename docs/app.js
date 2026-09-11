@@ -186,6 +186,17 @@ function boot() {
 
   let th = null;
   let seg = null;
+// Localhost only: post diagnostics to devserver.py, the browser twin of live_demo.py --log.
+// A deployed visitor posts nothing -- there is no endpoint and the guard short-circuits first.
+const LOGGING = ['localhost', '127.0.0.1'].includes(location.hostname);
+function postLog(obj) {
+  if (!LOGGING) return;
+  try {
+    fetch('/log', { method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(obj) + '\n', keepalive: true }).catch(() => {});
+  } catch (e) { /* diagnostics must never break the demo */ }
+}
+
 const trackLog = [];
 let nTracks = 0;
   let landmarker = null;
@@ -295,7 +306,17 @@ let nTracks = 0;
       seg = new Segmenter(th, {
         staticModel: models.static,
         motionModel: models.motion,
+        onHold: (h) => postLog({ kind: 'hold', ...h }),
         onEvent: (ev) => {
+          postLog({
+            kind: 'track', reason: ev.reason || 'scored', arm: ev.arm,
+            duration: ev.duration, t: ev.t_end,
+            // ev.P is (frames x 21 x 2). Map over FRAMES, then over the landmarks inside each
+            // one -- mapping a frame straight to [p[0], p[1]] keeps two landmarks, not two
+            // coordinates, and silently logs a 2-point hand.
+            times: Array.from(ev.times),
+            P: ev.P.map((frame) => Array.from(frame, (pt) => [pt[0], pt[1]])),
+          });
           trackLog.unshift({
             dur: ev.duration, arm: ev.arm,
             reason: ev.reason || 'scored', t: ev.t_end,
@@ -474,7 +495,21 @@ let nTracks = 0;
       // is assigned in image space on the frame as given -- which is unflipped here, exactly as
       // it was unflipped in training.
       const hs = res.handednesses || res.handedness;
-      if (hs && hs.length && hs[0].length) handed = hs[0][0].categoryName;
+      if (hs && hs.length && hs[0].length) {
+        // SWAP the label. The two MediaPipe APIs disagree about what they are labelling: the
+        // legacy `solutions` API that produced every training landmark reports handedness as if
+        // the image were mirrored (the selfie convention), while the Tasks API reports it for
+        // the frame exactly as given. Same hand, same unflipped frame, opposite word.
+        //
+        // Left unswapped, canonicalizeHandedness declines to mirror a hand that Python DID
+        // mirror, so every x coordinate reaches the model negated. Measured on real browser
+        // gestures: orient.x came out +0.574 where training averages -0.575 (z = +8.8) and
+        // every path*.x had its sign flipped, which turned J into MOVE at 0.41 and left Z
+        // abstaining at 0.45. Negating x on those same spans recovers EMIT J p=0.97 and
+        // EMIT Z p=0.93.
+        const raw = hs[0][0].categoryName;
+        handed = raw === 'Left' ? 'Right' : raw === 'Right' ? 'Left' : raw;
+      }
       pxHist.push({ t, lm });
       // The same span of history the segmenter keeps, read from the thresholds rather than
       // repeated as a number here: the longest thing ever drawn is one track, and a trail
