@@ -226,6 +226,32 @@ def speaker(enabled):
     return _speak
 
 
+STATIC_LETTERS = list("ABCDEFGHIKLMNOPQRSTUVWXY")
+
+
+def build_static_schedule(letters, get_ready_s, hold_s, lead_s, reps=1):
+    """One item per letter: GET READY, then HOLD while frames are recorded.
+
+    A second session is the only thing that fixes cross-session accuracy. Measured on this
+    project: a classifier trained on the November archive scores 0.97 on held-out frames from
+    that same archive and 0.52 on frames recorded months later -- and for D specifically, 0.00,
+    predicted as L or P on 1043 of 1044 frames. No threshold or feature reaches that; the model
+    has simply never seen the hand at this angle in this light.
+    """
+    # Repetitions matter more than duration. Sixty near-identical frames of one pose teach the
+    # model that pose; three separate holds at different wrist angles teach it the LETTER. The
+    # letters that fail across sessions are the ones whose appearance moves most with angle.
+    seq = [L for L in letters for _ in range(reps)]
+    items, t = [], float(lead_s)
+    for k, lab in enumerate(seq):
+        items.append({"label": lab, "index": k,
+                      "park": [t, t + get_ready_s],
+                      "go": [t + get_ready_s, t + get_ready_s + hold_s],
+                      "rest": [t + get_ready_s + hold_s, t + get_ready_s + hold_s]})
+        t += get_ready_s + hold_s
+    return items, t
+
+
 PHASE_TEXT = {
     "J": ("PARK: hold an I, freeze", "GO: trace the J hook"),
     "Z": ("PARK: hold a D / index point, freeze", "GO: draw the Z"),
@@ -368,6 +394,11 @@ def main():
     ap.add_argument("--clips", type=int, default=40, help="clips per class")
     ap.add_argument("--duration", type=float, default=2.0, help="seconds per clip")
     ap.add_argument("--countdown", type=float, default=2.5)
+    ap.add_argument("--reps", type=int, default=1,
+                    help="static capture: holds per letter. Vary the wrist angle between them.")
+    ap.add_argument("--static-letters", action="store_true",
+                    help="capture the 24 STATIC letters, one hold each. This is the second "
+                         "session that cross-session accuracy actually depends on.")
     ap.add_argument("--continuous", action="store_true",
                     help="record ONE unbroken take, prompting J / Z / near-miss on a fixed "
                          "rhythm instead of one clip per keypress. Each item is PARK, GO, REST; "
@@ -429,6 +460,75 @@ def main():
     mp_hands = mp.solutions.hands
     drawer = mp.solutions.drawing_utils
     aborted = False
+
+    if args.static_letters:
+        letters = [L for L in (args.letters if args.letters != ["J", "Z", "NONE"]
+                               else STATIC_LETTERS)]
+        items, total = build_static_schedule(letters, args.park, args.go, args.lead, args.reps)
+        print(f"static capture: {len(letters)} letters x {args.go}s hold = {total/60:.1f} min")
+        speak = speaker(args.speak)
+        speak(f"Static capture. {len(letters)} letters. Starting in {int(args.lead)} seconds.")
+        frames, stamps, handed, labels_pf = [], [], [], []
+        last = None
+        with mp_hands.Hands(static_image_mode=False, max_num_hands=1,
+                            min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+            t0 = time.perf_counter()
+            while True:
+                t = time.perf_counter() - t0
+                if t >= total:
+                    break
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                cur = next((i for i in items if i["park"][0] <= t < i["go"][1]), None)
+                phase = None
+                if cur is not None:
+                    phase = "READY" if t < cur["park"][1] else "HOLD"
+                    if (cur["index"], phase) != last:
+                        last = (cur["index"], phase)
+                        if phase == "READY":
+                            speak(cur["label"])
+                            print(f"[{t:6.1f}s] {cur['index']+1}/{len(items)}  {cur['label']}", flush=True)
+                if res.multi_hand_landmarks:
+                    hand = res.multi_hand_landmarks[0]
+                    lr = (res.multi_handedness[0].classification[0].label
+                          if res.multi_handedness else "Unknown")
+                    mp.solutions.drawing_utils.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS)
+                else:
+                    hand, lr = None, "None"
+                # Only frames inside a HOLD window are kept, and each carries its own letter.
+                if cur is not None and phase == "HOLD" and hand is not None:
+                    frames.append([(p.x, p.y, p.z) for p in hand.landmark])
+                    stamps.append(t); handed.append(lr); labels_pf.append(cur["label"])
+                disp = cv2.flip(frame, 1)
+                if cur is None:
+                    draw_banner(disp, [("GET READY", 1.4, 4),
+                                       (f"starting in {max(0, items[0]['park'][0]-t):.0f}s", 0.9, 2)],
+                                (0, 200, 255))
+                else:
+                    col = (0, 200, 255) if phase == "READY" else (0, 0, 255)
+                    draw_banner(disp, [(f"{cur['label']}   {phase}", 1.6, 4),
+                                       (f"{cur['index']+1}/{len(items)}   {total-t:.0f}s left", 0.7, 2),
+                                       (f"{len(frames)} frames kept", 0.6, 2)], col)
+                cv2.imshow("collect_motion", disp)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print("stopped early; keeping what was recorded")
+                    break
+        cap.release(); cv2.destroyAllWindows()
+        if len(frames) < 20:
+            print("nothing usable recorded"); return
+        np.savez_compressed(args.out,
+                            lm=np.array(frames, dtype=np.float32),
+                            stamps=np.array(stamps, dtype=np.float32),
+                            handed=np.array(handed),
+                            letters=np.array(labels_pf),
+                            session=np.array(args.session),
+                            frame_size=np.array([probe.shape[1], probe.shape[0]]))
+        from collections import Counter as _C
+        print(f"\nwrote {args.out}: {len(frames)} frames  {dict(_C(labels_pf))}")
+        print("\nNext:  ../.venv/bin/python temporal/train_static.py --extra " + args.out)
+        return
 
     if args.continuous:
         with mp_hands.Hands(static_image_mode=False, max_num_hands=1,

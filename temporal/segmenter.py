@@ -58,18 +58,25 @@ class _Frame:
     P: np.ndarray         # (21,2) isotropic, handedness-canonicalized
     S: float
     m: np.ndarray         # palm centre
-    shape: np.ndarray     # 42-D
+    shape: np.ndarray     # 42-D, palm-normalized: drives sigma / stability / rigidity
     j_gate: bool
     z_gate: bool
+    static_feat: np.ndarray = None  # 143-D, what the static classifier consumes
+    v: float = 0.0        # smoothed palm speed at this frame, kept so the arming window can ask
+                          # whether the hand was ever actually parked
 
 
 class Segmenter:
     def __init__(self, thresholds: Thresholds = DEFAULT, static_model=None, motion_model=None,
-                 static_classes=None, motion_classes=None, on_event=None):
+                 static_classes=None, motion_classes=None, on_event=None, on_hold=None):
         self.th = thresholds
         #: Optional callback receiving every cut motion span, before the vetoes and before any
         #: model runs. Used by label_events.py to build training data with runtime boundaries.
         self.on_event = on_event
+        #: Optional callback fired once per completed static vote, whether or not it emitted.
+        #: A hold that abstains leaves no other trace, so without this a letter that silently
+        #: fails the probability floor is indistinguishable from one never attempted.
+        self.on_hold = on_hold
         self.static_model = static_model
         self.motion_model = motion_model
         self.static_classes = list(static_classes) if static_classes is not None else None
@@ -82,6 +89,7 @@ class Segmenter:
         self._still_since: Optional[float] = None
         self._rise_start: Optional[float] = None
         self._fall_start: Optional[float] = None
+        self._fall_stop: Optional[float] = None
         self._track_from: Optional[float] = None
         self._arm: Optional[str] = None
         self._hold_consumed = False
@@ -94,6 +102,7 @@ class Segmenter:
         # Exposed for the debug overlay; the only defence against a silently non-firing gate.
         self.v_bar = 0.0
         self.sigma = 0.0
+        self.sigma_rigid = 0.0
 
     # ------------------------------------------------------------------ helpers
 
@@ -104,6 +113,7 @@ class Segmenter:
     def _reset_history(self):
         self.buf.clear()
         self._still_since = self._rise_start = self._fall_start = None
+        self._fall_stop = None
         self._track_from = None
         self._arm = None
         self._hold_consumed = False
@@ -120,6 +130,7 @@ class Segmenter:
         if n < 2:
             self.v_bar = 0.0
             self.sigma = 0.0
+            self.sigma_rigid = 0.0
             return
         # Smoothing window in SECONDS, not frames: a fixed sample count is a different amount
         # of smoothing at every frame rate, and an under-smoothed v_bar never holds
@@ -139,8 +150,18 @@ class Segmenter:
             sh = np.stack([f.shape for f in win])
             ref = np.median(sh, axis=0)
             self.sigma = float(np.linalg.norm((sh[-1] - ref).reshape(21, 2), axis=-1).mean())
+            # The rigidity veto uses the ROTATION-ALIGNED deviation, so a turning hand is not
+            # mistaken for a reshaping one. Stability (SHAPE_STABLE) keeps the plain measure:
+            # a rotating hand is genuinely not parked.
+            cur = sh[-1].reshape(21, 2); r = ref.reshape(21, 2)
+            H = cur.T @ r
+            U, _, Vt = np.linalg.svd(H)
+            dsign = np.sign(np.linalg.det(Vt.T @ U.T))
+            R = Vt.T @ np.diag([1.0, dsign]) @ U.T
+            self.sigma_rigid = float(np.linalg.norm((R @ cur.T).T - r, axis=-1).mean())
         else:
             self.sigma = 0.0
+            self.sigma_rigid = 0.0
 
     def _gate_fraction(self, t_end, which):
         win = [f for f in self.buf if t_end - self.th.GATE_ARM_WINDOW <= f.t <= t_end]
@@ -162,17 +183,26 @@ class Segmenter:
             elif self.state == TRACKING and self.last_seen is not None \
                     and t - self.last_seen > self.th.GAP_INTERP:
                 # Emit nothing rather than classify a half-seen path.
+                self._report_span(f"abort:GAP {t - self.last_seen:.2f}s", t)
                 self._abort_track()
             return self._check_pending(t)
 
-        P = F.to_isotropic(np.asarray(landmarks)[:, :2], width, height)
+        raw = np.asarray(landmarks, dtype=np.float64)
+        if not np.isfinite(raw[:, :2]).all():
+            # A partially-NaN landmark set reaches the rigidity SVD and raises
+            # LinAlgError("SVD did not converge"), killing the process mid-session. Treat it as
+            # a non-detection, which is what it is.
+            return self.step(t, None, handedness, width, height)
+        P = F.to_isotropic(raw[:, :2], width, height)
         P = F.canonicalize_handedness(P, handedness)
         fr = _Frame(t=t, P=P, S=float(F.palm_scale(P)), m=F.palm_centre(P),
-                    shape=F.shape42(P), j_gate=bool(F.j_gate(P)), z_gate=bool(F.z_gate(P)))
+                    shape=F.shape42(P), static_feat=F.static_feature(P),
+                    j_gate=bool(F.j_gate(P)), z_gate=bool(F.z_gate(P)))
         self.buf.append(fr)
         self._trim()
         self.last_seen = t
         self._update_signals()
+        fr.v = self.v_bar
 
         if self.state == NO_HAND:
             self.state = SETTLING
@@ -200,9 +230,16 @@ class Segmenter:
                 # Arm on the window BEFORE the rise began: was the hand parked in a launch pose?
                 jf = self._gate_fraction(self._rise_start, "j_gate")
                 zf = self._gate_fraction(self._rise_start, "z_gate")
-                if max(jf, zf) >= th.GATE_ARM_FRAC:
+                parked = True
+                if th.REQUIRE_PARKED:
+                    win = [f for f in self.buf
+                           if self._rise_start - th.GATE_ARM_WINDOW <= f.t <= self._rise_start]
+                    parked = any(f.v < th.V_STILL for f in win)
+                if parked and max(jf, zf) >= th.GATE_ARM_FRAC:
                     self._arm = "J" if jf >= zf else "Z"
-                    self._track_from = self._rise_start
+                    # Back-date the start: the smoothed speed confirms the rise only after the
+                    # stroke has begun, so without a lead-in the path misses its own opening.
+                    self._track_from = self._rise_start - th.LEAD_IN
                     self.state = TRACKING
                     self._fall_start = None
                     return None
@@ -231,17 +268,52 @@ class Segmenter:
         if self.static_model is None or self._hold_consumed:
             return None
 
-        proba = self.static_model.predict_proba(self.buf[-1].shape.reshape(1, -1))[0]
+        proba = self.static_model.predict_proba(self.buf[-1].static_feat.reshape(1, -1))[0]
         self._votes.append((t, proba))
         self._votes = [(vt, p) for vt, p in self._votes if t - vt <= th.VOTE_WINDOW]
-        if not self._votes or t - self._votes[0][0] < th.VOTE_WINDOW * 0.9:
+        spanned = self._votes and (t - self._votes[0][0]) >= th.VOTE_WINDOW * 0.9
+        if not (spanned or len(self._votes) >= th.VOTE_MIN):
             return None
 
         idx = [int(np.argmax(p)) for _, p in self._votes]
         win = max(set(idx), key=idx.count)
         agree = idx.count(win) / len(idx)
-        meanp = float(np.mean([p[win] for _, p in self._votes]))
-        if agree < th.VOTE_AGREE or meanp < th.VOTE_PROB or t < self._cooldown_until:
+        mean_probs = np.mean([p for _, p in self._votes], axis=0)
+        meanp = float(mean_probs[win])
+        runner = float(np.sort(mean_probs)[-2]) if len(mean_probs) > 1 else 0.0
+        margin = meanp - runner
+        if self.on_hold is not None:
+            top = int(np.argmax(np.mean([p for _, p in self._votes], axis=0)))
+            probs = np.mean([p for _, p in self._votes], axis=0)
+            order = np.argsort(probs)[::-1][:3]
+            fr = self.buf[-1]
+            _e = F.extension_ratios(fr.P)
+            geom = {"idx_straight": float(F.finger_straightness(fr.P, "index")),
+                    "mid_straight": float(F.finger_straightness(fr.P, "mid")),
+                    "thumb_midtip": float(np.linalg.norm(fr.P[4] - fr.P[12]) / F.palm_scale(fr.P)),
+                    "thumb_pinkymcp": float(F.thumb_pinkymcp(fr.P)),
+                    "ext": {k: float(v) for k, v in _e.items()}}
+            self.on_hold({"t": t, "geom": geom,
+                          # The landmarks themselves, so a live failure can be replayed against
+                          # any candidate model offline instead of costing another live session.
+                          "P": fr.P.tolist(),
+                          "winner": self.static_classes[win] if self.static_classes else str(win),
+                          "agree": float(agree), "meanp": float(meanp),
+                          "top3": [(self.static_classes[int(j)] if self.static_classes else str(j),
+                                    float(probs[int(j)])) for j in order],
+                          "margin": float(margin),
+                          "blocked": (agree < th.VOTE_AGREE or meanp < th.VOTE_PROB
+                                      or margin < th.VOTE_MARGIN or t < self._cooldown_until),
+                          "why": ("agree" if agree < th.VOTE_AGREE else
+                                  "margin" if margin < th.VOTE_MARGIN else
+                                  "undecided" if not (meanp >= th.VOTE_PROB or
+                                                      (margin >= th.VOTE_MARGIN_CLEAR and
+                                                       meanp >= th.VOTE_PROB_FLOOR)) else
+                                  "cooldown" if t < self._cooldown_until else "emitted")})
+        confident = meanp >= th.VOTE_PROB
+        decisive = margin >= th.VOTE_MARGIN_CLEAR and meanp >= th.VOTE_PROB_FLOOR
+        if (agree < th.VOTE_AGREE or margin < th.VOTE_MARGIN or not (confident or decisive)
+                or t < self._cooldown_until):
             return None
 
         letter = self.static_classes[win] if self.static_classes else str(win)
@@ -269,24 +341,54 @@ class Segmenter:
         th = self.th
         elapsed = t - self._track_from
 
-        if self.sigma > th.RIGID_VETO:
+        if self.sigma_rigid > th.RIGID_VETO:
+            self._report_span(f"abort:RIGID_VETO sigma={self.sigma_rigid:.2f}>{th.RIGID_VETO}", t)
             # The handshape itself changed, so this was a transition between letters, not a
             # rigid-hand sign. This replaces a gate-persistence check, which would have killed
             # real Js whose pinky curls at the bottom of the hook.
             self._abort_track()
             return None
         if elapsed > th.T_MAX:
+            self._report_span(f"abort:T_MAX {elapsed:.2f}s", t)
             self._abort_track()
             return None
 
+        # Tier 1: actually stopped. Fast to confirm; the path is complete.
         if self.v_bar < th.V_STILL:
+            if self._fall_stop is None:
+                self._fall_stop = t
+            if t - self._fall_stop >= th.FALL_CONFIRM:
+                return self._score(t)
+        else:
+            self._fall_stop = None
+
+        # Tier 2: slowed but still drifting. Confirmed slowly, so a corner of a Z -- where the
+        # tip reverses and the smoothed speed dips -- does not end the track mid-gesture.
+        if self.v_bar < th.V_FALL:
             if self._fall_start is None:
                 self._fall_start = t
-            elif t - self._fall_start >= th.FALL_CONFIRM:
+            elif t - self._fall_start >= th.FALL_CONFIRM_SLOW:
                 return self._score(t)
         else:
             self._fall_start = None
         return None
+
+    def _report_span(self, reason, t):
+        """Hand an observer the span of a track that is ending, however it ends.
+
+        Aborted tracks matter more than scored ones for diagnosis: a gesture killed by the
+        rigidity veto, by T_MAX, or by a detection gap leaves no other trace at all. Logging
+        only the scored path makes precisely the failures one is hunting invisible.
+        """
+        if self.on_event is None or self._track_from is None:
+            return
+        frames = self._since(self._track_from)
+        if len(frames) < 3:
+            return
+        times = np.array([f.t for f in frames])
+        self.on_event({"times": times, "P": np.stack([f.P for f in frames]),
+                       "arm": self._arm, "duration": float(times[-1] - times[0]),
+                       "t_end": t, "accepted": None, "reason": reason})
 
     def _abort_track(self):
         self.state = SETTLING
@@ -294,6 +396,7 @@ class Segmenter:
         self._arm = None
         self._rise_start = None
         self._fall_start = None
+        self._fall_stop = None
         self._still_since = None
 
     # ------------------------------------------------------------------ scoring
@@ -318,7 +421,7 @@ class Segmenter:
         # reproduce -- train/serve skew of exactly the kind this project exists to document.
         if self.on_event is not None:
             self.on_event({"times": times, "P": P, "arm": arm, "duration": duration,
-                           "t_end": t, "accepted": None})
+                           "t_end": t, "accepted": None, "reason": "scored"})
 
         if not (th.T_MIN <= duration <= th.T_MAX):
             return None

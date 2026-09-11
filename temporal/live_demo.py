@@ -140,6 +140,10 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--camera", type=int, default=0,
                     help="camera index; a built-in webcam is usually 0")
+    ap.add_argument("--log", default=None,
+                    help="append every attempted track to this JSONL, with the raw landmark "
+                         "span and the reason it was accepted or rejected. This is how a live "
+                         "failure gets diagnosed instead of guessed at.")
     ap.add_argument("--thresholds", default=None,
                     help="JSON written by Thresholds.to_json (see temporal/calibrate.py)")
     ap.add_argument("--no-motion", action="store_true",
@@ -168,9 +172,9 @@ def main():
     if not os.path.exists(STATIC_MODEL):
         raise SystemExit(f"{STATIC_MODEL} not found; run temporal/train_static.py first")
     static_model, static_classes, blob = load_model(STATIC_MODEL)
-    if blob.get("feature") not in (None, "shape42/v1"):
+    if blob.get("feature") not in (None, "static/v3"):
         raise SystemExit(f"{STATIC_MODEL} was trained on feature {blob['feature']!r}, but the "
-                         "segmenter feeds shape42/v1; retrain before running live")
+                         "segmenter feeds shape84/v1; retrain before running live")
     print(f"static model: {len(static_classes or [])} classes, "
           f"{blob.get('n_train', '?')} training frames")
 
@@ -200,15 +204,47 @@ def main():
         raise SystemExit(f"could not open camera {args.camera}; try --camera 0 or --camera 1")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    ok, probe = cap.read()
-    if not ok or probe is None:
+    # Retry briefly: on macOS the first read after opening routinely fails while the device
+    # negotiates a format, and treating that as a wrong camera index sends you hunting for a
+    # problem that does not exist. collect_motion.py already did this; live_demo did not, so
+    # the same camera that recorded fine refused to open the demo.
+    probe = None
+    for _ in range(30):
+        ok, probe = cap.read()
+        if ok and probe is not None:
+            break
+        time.sleep(0.1)
+    else:
         cap.release()
-        raise SystemExit(f"camera {args.camera} opened but returned no frame; try another index")
+        raise SystemExit(f"camera {args.camera} opened but returned no frame after 3s; try "
+                         f"another --camera index, or grant camera access to this terminal in "
+                         f"System Settings > Privacy & Security > Camera")
     H, W = probe.shape[:2]
     print(f"camera {args.camera} ok, frame {W}x{H}. Q quits, C clears, SPACE prints signals.")
 
     DW, DH = DISPLAY_W, int(round(DISPLAY_W * H / W))
-    seg = Segmenter(th, static_model, motion_model, static_classes, motion_classes)
+    _logf = open(args.log, 'a') if args.log else None
+    def _log_span(ev):
+        # Fired before any veto runs, so a rejected gesture is captured too --
+        # the rejected ones are exactly the ones worth looking at.
+        if _logf is None:
+            return
+        import json as _json
+        _logf.write(_json.dumps({'t': float(ev['t_end']), 'arm': ev['arm'],
+            'duration': float(ev['duration']),
+            'reason': ev.get('reason', 'scored'),
+            'times': [float(x) for x in ev['times']],
+            'P': np.asarray(ev['P']).tolist()}) + '\n')
+        _logf.flush()
+    def _log_hold(h):
+        if _logf is None:
+            return
+        import json as _json
+        _logf.write(_json.dumps({"kind": "hold", **h}) + "\n")
+        _logf.flush()
+
+    seg = Segmenter(th, static_model, motion_model, static_classes, motion_classes,
+                    on_event=_log_span, on_hold=_log_hold)
     letters, out_str = [], ""
     frame_times = deque(maxlen=30)
     # Normalized landmarks, kept here rather than read back out of the segmenter: its buffer

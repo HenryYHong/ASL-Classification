@@ -99,11 +99,110 @@ def shape42(P):
     return q.reshape(*q.shape[:-2], SHAPE_DIM)
 
 
+def legacy42(P):
+    """The original pipeline's feature: translation-normalized, NOT scale-normalized.
+
+    Kept because removing it was a mistake. Dividing by palm size makes the representation
+    distance-invariant, but it also discards absolute extent -- and extent is what separated
+    G and D from the shapes they collide with. Measured on a held-out archive split, replacing
+    this with the palm-normalized feature alone dropped G from 1.00 to 0.25 and D from 1.00 to
+    0.85, which showed up in use as letters that simply stopped being recognized.
+    """
+    x, y = P[..., 0], P[..., 1]
+    out = np.empty((*P.shape[:-2], SHAPE_DIM))
+    out[..., 0::2] = x - x.min(axis=-1, keepdims=True)
+    out[..., 1::2] = y - y.min(axis=-1, keepdims=True)
+    return out
+
+
+def shape84(P):
+    """Both representations concatenated: palm-normalized shape, then raw translated extent.
+
+    The forest picks per split, so scale-invariant evidence is available where it helps and
+    absolute extent where that is what distinguishes the letter. Measured on the contiguous
+    archive split: 0.945 against 0.926 for extent alone and 0.908 for palm-normalized alone,
+    while retaining most of the rescale robustness the palm feature was introduced for
+    (0.76 at 0.7x, where the original collapses to 0.34).
+    """
+    return np.concatenate([shape42(P), legacy42(P)], axis=-1)
+
+
+#: Landmarks whose pairwise distances carry the handshape distinctions trees struggle to
+#: express from raw coordinates: the five fingertips, the five MCP knuckles and the wrist.
+KEY_POINTS = [4, 8, 12, 16, 20, 2, 5, 9, 13, 17, 0]
+
+
+def pair_distances(P):
+    """All pairwise distances between KEY_POINTS, in palm units, plus per-finger straightness.
+
+    A forest splits on one coordinate at a time, so "are the index and middle fingertips far
+    apart" costs it a deep chain of axis-aligned splits on four separate coordinates -- and that
+    single quantity is the whole difference between U and V, as thumb-to-fist distance is between
+    M and A. Handing over the distances directly turns those into one split each.
+
+    Measured on the held-out archive split, adding this block took overall accuracy from 0.956 to
+    0.983 and M from 0.25 to 0.85. Computing the distances in 3-D instead (MediaPipe supplies a
+    z) was tried and was slightly worse: the depth channel is too noisy to help.
+    """
+    import itertools
+    S = palm_scale(P)
+    out = [np.linalg.norm(P[..., a, :] - P[..., b, :], axis=-1) / S
+           for a, b in itertools.combinations(KEY_POINTS, 2)]
+    out += [finger_straightness(P, n) for n in ("index", "mid", "ring", "pinky")]
+    return np.stack(out, axis=-1)
+
+
+def static_feature(P):
+    """What the 24-class static classifier consumes: palm-normalized shape + distances.
+
+    Deliberately NOT including legacy42. Adding absolute extent raises the in-session benchmark
+    (0.968 -> 0.983) and HALVES cross-session accuracy (0.520 -> 0.320), because extent encodes
+    how this signer happened to be sitting and the within-session split rewards memorising that.
+    The distance block is kept because it costs nothing cross-session and fixes the confusable
+    pairs the raw coordinates could not express: G 0.25 -> passing, M 0.20 -> 0.65.
+
+    The measurement that matters here is the cross-session one -- train on the archive, test on
+    frames recorded months later on a different day. This repository's README exists largely to
+    document how misleading the in-session number is, and it misled me twice while tuning this.
+    """
+    return np.concatenate([shape42(P), pair_distances(P)], axis=-1)
+
+
+STATIC_DIM = 101
+
+
 def extension_ratios(P):
     """Fingertip distance from the wrist, in palm units. dict of 5, each shape (...)."""
     S = palm_scale(P)
     w = P[..., WRIST, :]
     return {k: np.linalg.norm(P[..., i, :] - w, axis=-1) / S for k, i in TIPS.items()}
+
+
+#: MCP, PIP, DIP, TIP for each finger -- the joint chain used by finger_straightness.
+FINGER_CHAIN = {"index": (5, 6, 7, 8), "mid": (9, 10, 11, 12),
+                "ring": (13, 14, 15, 16), "pinky": (17, 18, 19, 20)}
+
+
+def finger_straightness(P, name):
+    """|tip - MCP| / (sum of the three bone lengths). 1.0 is a perfectly straight finger.
+
+    This exists because wrist-to-tip DISTANCE is not orientation-invariant. MediaPipe gives
+    2-D projected coordinates, so a finger pointing toward the camera foreshortens and its
+    measured extension collapses -- a live Z read ext_index 1.87 against a threshold of 1.80,
+    failing 43% of frames, purely because the finger was not held flat to the lens. The signer
+    had to point upward for it to work at all.
+
+    A ratio survives that: foreshortening shrinks the numerator and the denominator together,
+    so a straight finger reads ~1.0 whichever way it points. Measured on the same footage the
+    distance gate scored 56%, this scores 89%, while admitting FEWER archive false positives
+    (91 frames against 118) because a curled finger is unambiguous under this measure.
+    """
+    a, b, c, d = FINGER_CHAIN[name]
+    tip = np.linalg.norm(P[..., d, :] - P[..., a, :], axis=-1)
+    seg = (np.linalg.norm(P[..., b, :] - P[..., a, :], axis=-1)
+           + np.linalg.norm(P[..., c, :] - P[..., b, :], axis=-1)
+           + np.linalg.norm(P[..., d, :] - P[..., c, :], axis=-1))
+    return tip / np.maximum(seg, 1e-9)
 
 
 def thumb_pinkymcp(P):
@@ -132,10 +231,16 @@ def j_gate(P):
 
 
 def z_gate(P):
-    """Is this frame in a Z launch pose (index extended, others curled)?"""
+    """Is this frame in a Z launch pose (index extended, others curled)?
+
+    The index test is straightness, not wrist-to-tip distance, so the gate does not silently
+    require the finger to be held flat to the camera. The curled-finger and thumb tests stay on
+    extension ratios: straightness is unreliable for a folded finger, whose joints MediaPipe
+    often cannot see.
+    """
     e = extension_ratios(P)
     others = np.maximum(np.maximum(e["mid"], e["ring"]), e["pinky"])
-    return (e["index"] > 1.80) & (others < 1.20) & (e["thumb"] < 1.45)
+    return (finger_straightness(P, "index") > 0.90) & (others < 1.20) & (e["thumb"] < 1.45)
 
 
 def hand_orientation(P):
@@ -178,6 +283,37 @@ def rolling_shape_sigma(shapes, times, window_s=0.4):
         j = np.searchsorted(times, times[i] - window_s)
         ref = np.median(shapes[j:i + 1], axis=0)
         out[i] = np.linalg.norm((shapes[i] - ref).reshape(21, 2), axis=-1).mean()
+    return out
+
+
+def rolling_shape_sigma_aligned(shapes, times, window_s=0.4):
+    """Shape deviation AFTER removing the best-fit rotation. Palm units.
+
+    rolling_shape_sigma answers "did anything about this hand change", which is the right
+    question for "is it parked". It is the wrong question for "is this a rigid gesture",
+    because shape42 is deliberately not rotation-normalized: a J hook rotates the wrist, so a
+    perfectly rigid hand registers a large deviation purely from turning. Calibrating a rigidity
+    veto on that measure forced it up to 1.35 palm, high enough that it stopped rejecting
+    inter-letter transitions -- which then starved the static branch, because no letter can be
+    emitted while a stale track is still running.
+
+    Removing the rotation (Kabsch, 2-D) separates the two: what remains is only the part of the
+    change that a rotation cannot explain, i.e. the fingers actually moving relative to each
+    other. A rigid hand being carried through an arc scores near zero however far it turns.
+    """
+    shapes = np.asarray(shapes, dtype=np.float64)
+    times = np.asarray(times, dtype=np.float64)
+    out = np.empty(len(shapes))
+    for i in range(len(shapes)):
+        j = np.searchsorted(times, times[i] - window_s)
+        ref = np.median(shapes[j:i + 1], axis=0).reshape(21, 2)
+        cur = shapes[i].reshape(21, 2)
+        # Optimal rotation taking cur onto ref; both are already centred and palm-scaled.
+        H = cur.T @ ref
+        U, _, Vt = np.linalg.svd(H)
+        d = np.sign(np.linalg.det(Vt.T @ U.T))
+        R = Vt.T @ np.diag([1.0, d]) @ U.T
+        out[i] = np.linalg.norm((R @ cur.T).T - ref, axis=-1).mean()
     return out
 
 
