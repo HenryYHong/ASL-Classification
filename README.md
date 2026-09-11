@@ -1,5 +1,10 @@
 # Real-time American Sign Language Recognition
 
+![Signing A B C H E N R Y J Z into the hosted page, each letter appearing as it is recognized](docs/demo.gif)
+
+*Me, on the [hosted page](https://henryyhong.com/ASL-Classification/), in one take. Trimmed and cropped, never sped up — a recognizer's demo is partly a claim about its latency. The last two letters are the ones a single frame cannot express: J and Z are drawn, not held.*
+
+
 Three attempts at the same problem, kept in the order I built them, because each one exists because of what the last one got wrong.
 
 **A** is a CNN on raw 28x28 pixels: 95-99% on its benchmark, and it collapses onto a handful of classes in front of a webcam. **B** throws the pixels away and classifies MediaPipe's 21 hand landmarks instead: it works live, but only for 24 letters, and its 99.58% is measured on near-duplicate frames from the session it trained on. **C** is what happens when you take that criticism seriously — a motion branch that adds J and Z, a feature that survives a change of day, and a number measured by holding out a whole recording session. It runs in the browser.

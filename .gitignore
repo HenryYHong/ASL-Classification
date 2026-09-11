@@ -17,3 +17,7 @@ docs/models.json.gz
 
 # Diagnostics the local dev server writes when the page posts to /log.
 docs/browser_log.jsonl
+
+# Written by docs/make_demo.sh beside the committed GIF. It is the asset to drag into a
+# GitHub editor for an inline player; the repo itself ships the GIF.
+docs/demo.mp4
