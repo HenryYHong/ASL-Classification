@@ -2,16 +2,16 @@
 
 ![Signing A B C H E N R Y J Z into the hosted page, each letter appearing as it is recognized](docs/demo.gif)
 
-*Me, on the [hosted page](https://henryyhong.com/ASL-Classification/), in one take. Trimmed and cropped, never sped up — a recognizer's demo is partly a claim about its latency. The last two letters are the ones a single frame cannot express: J and Z are drawn, not held.*
+*One take on the [hosted page](https://henryyhong.com/ASL-Classification/). I trimmed and cropped the recording but did not speed it up, so the pace here is the pace it runs at. J and Z come last because they are the two letters that cannot be read from a single frame.*
 
 
-Three attempts at the same problem, kept in the order I built them, because each one exists because of what the last one got wrong.
+This repository holds three attempts at the same problem, kept in the order I built them, because each one grew out of a limitation in the one before it.
 
-**A** is a CNN on raw 28x28 pixels: 95-99% on its benchmark, and it collapses onto a handful of classes in front of a webcam. **B** throws the pixels away and classifies MediaPipe's 21 hand landmarks instead: it works live, but only for 24 letters, and its 99.58% is measured on near-duplicate frames from the session it trained on. **C** is what happens when you take that criticism seriously — a motion branch that adds J and Z, a feature that survives a change of day, and a number measured by holding out a whole recording session. It runs in the browser.
+The first trains a CNN on 28x28 pixel images. It scores between 95% and 99% on its benchmark and still fails in front of a webcam. The second ignores the pixels and classifies the 21 hand landmarks that MediaPipe reports instead. It works live, but it covers only 24 letters, and its 99.58% comes from a split that puts nearly identical frames on both sides. The third adds J and Z, reports its accuracy from a split that holds out an entire recording session, and runs in a browser.
 
-### [Try it in your browser →](https://henryyhong.com/ASL-Classification/)
+### Try it
 
-No install, no upload: the model is ~8 MB of JSON, and the camera frames never leave your machine. Chrome or Safari, allow the camera, sign at the box.
+The third approach is hosted at **[henryyhong.com/ASL-Classification](https://henryyhong.com/ASL-Classification/)**. There is nothing to install, and the camera frames stay on your machine: the page downloads about 8 MB of JSON and runs the model locally. Chrome and Safari both work. Allow the camera, then sign into the box.
 
 <img width="525" alt="ASL" src="https://github.com/user-attachments/assets/7a6fde28-68aa-4d7b-92a0-115bef967a6f" />
 <img width="604" alt="ASL3" src="https://github.com/user-attachments/assets/c56a280c-6667-4226-b86d-fa9c79073faa" />
@@ -22,7 +22,7 @@ No install, no upload: the model is ~8 MB of JSON, and the camera frames never l
 
 **Approaches A and B cover 24 letters:** A B C D E F G H I K L M N O P Q R S T U V W X Y. **Approach C covers all 26.**
 
-**J and Z are motion signs** — J traces a hook, Z traces a zigzag — and neither is expressible in a single still frame. A single frame of a J *is* an I. Any model that classifies one frame with no temporal state has them outside its label space by construction, which is why A and B stop at 24 and why `temporal/` is a different shape of program rather than a bigger forest.
+J and Z are motion signs. J traces a hook and Z traces a zigzag, so neither can be read from a single still frame, and a single frame of a J is simply an I. A model that sees one frame at a time cannot represent them at all, which is why the first two approaches stop at 24 letters, and why the third one needed a different design rather than a larger forest.
 
 All three are fingerspelling letter classifiers, not sign language translators: one letter at a time, no words, no grammar, no facial markers, no two-handed signs.
 
@@ -261,9 +261,9 @@ So the defensible claim is narrow: the 42-D landmark representation separates th
 
 ---
 
-## Approach C — motion letters, and a number that survives a new day
+## Approach C — motion letters, measured across sessions
 
-`temporal/` is the answer to the section above. It covers J and Z, and it measures itself by holding out an entire recording session rather than 20% of one burst. Full write-up in [`temporal/README.md`](temporal/README.md).
+`temporal/` addresses both of the problems described above. It covers all 26 letters, and it measures itself by holding out an entire recording session rather than 20% of a single burst. The full write-up is in [`temporal/README.md`](temporal/README.md).
 
 | | result | how it was split |
 | --- | --- | --- |
@@ -275,17 +275,27 @@ So the defensible claim is narrow: the 42-D landmark representation separates th
 | Launch gate on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-Read the per-fold spread, not the mean. Two of the four sessions are targeted re-recordings covering six and four letters, and a fold that tests four well-separated letters scores 1.000 — which is the same trick that made Approach B's 100.00% meaningless, and counting it would earn the same criticism.
+The spread between folds is more informative than the average. Two of the four sessions are short re-recordings covering only six and four letters, and the fold that tests four well-separated letters scores 1.000. Averaging the folds evenly would let that one carry the result, which is the same problem I describe in Approach B's 100.00% above. The pooled figure counts every held-out frame once, and the fold that holds out the 24-letter archive is the only one that tests the whole alphabet.
 
-**One transform, two branches.** Every frame becomes the same 101-D vector: 21 landmarks centered on the palm and divided by palm width, plus all pairwise distances between fingertips, knuckles and wrist. The distance block is there because a forest splits one coordinate at a time, so "how far apart are these two fingertips" — the whole difference between U and V — otherwise costs it a deep chain of splits. Dividing by palm width is the fix for Approach B's largest weakness: the features are now scale-invariant, so distance from the camera stops changing the answer.
+### The feature
 
-**A gate decides when to look, and it is deliberately not a model.** Six inequalities on finger geometry say whether the hand is in J's or Z's launch pose; a track starts only on a *rising edge* — parked in that pose, and then moving — which is why ordinary hand travel almost never creates a scoring opportunity. Six inequalities fail visibly and can be read straight off the live overlay. An out-of-distribution probability fails confidently, which is the failure mode Approach A is made of.
+Every frame becomes a vector of 101 values: the 21 landmarks centered on the palm and divided by palm width, followed by the distance between every pair of fingertips, knuckles and the wrist. The pairwise distances matter because a decision tree splits on one value at a time, so a question such as "how far apart are these two fingertips", which is the whole difference between U and V, would otherwise take a long chain of splits to express. Dividing by palm width also fixes the largest weakness of Approach B, because the features no longer change when the hand moves closer to or further from the camera.
 
-**Ratios, not lengths.** A finger pointing at the camera projects short, so 2-D distances shrink for reasons that have nothing to do with the handshape. Straightness — tip-to-knuckle distance over the sum of the bone lengths — is a ratio, and it survives that.
+### Deciding when a motion letter has begun
 
-**What it actually cost.** Every letter I reported as broken during development turned out to be either a disagreement inside my own recordings or a threshold I had guessed before the data existed — never a weakness in the model. Every `G` frame in one session had an extended middle finger, which is an `H`; the correct frames were outvoted and `G` read as `H` everywhere. `T_MAX` sat *below* the p95 of my own recorded Z durations, clipping real gestures out of the distribution the classifier was fitted on. `P_EMIT` was 0.70 and silently dropped about one genuine gesture in three. Logging what the running system actually saw found all of them; reading the code found none.
+Six inequalities on finger geometry decide whether the hand is currently in the launch pose for J or for Z. A gesture is tracked only if the hand was held still in that pose and then started moving, so the ordinary movement between letters almost never begins a track. I kept these as explicit inequalities rather than training a second model, because I can watch each condition on the live overlay and see which one failed. A model asked about an input unlike anything in its training set tends instead to answer confidently and incorrectly, which is the failure mode Approach A demonstrates.
 
-**It runs in the browser.** `docs/` is a line-for-line port — same feature code, same thresholds, same forests flattened to JSON. The page checks itself against `golden.json` (15 real frames with the answers Python gives) before the camera ever turns on, and says so in the readout, because a silent Python/JavaScript divergence is the one bug that would look exactly like "the model is bad."
+### Ratios rather than lengths
+
+A finger pointing toward the camera appears shorter than it is, so a distance measured in the image changes for reasons that have nothing to do with the handshape. Straightness is the distance from fingertip to knuckle divided by the summed length of the bones. Because it is a ratio, it stays stable under that foreshortening.
+
+### What the development actually cost
+
+Every letter I found broken while building this turned out to be either an inconsistency in my own recordings or a threshold I had chosen before I had the data to choose it. In one session every `G` frame had an extended middle finger, which makes the sign an `H`; those frames outvoted the correct ones, and `G` was read as `H` everywhere. `T_MAX` was set below the 95th percentile of my own recorded Z durations, which cut genuine gestures out of the range the classifier had been fitted on. `P_EMIT` was 0.70, which quietly discarded about one real gesture in three. I found each of these by logging what the running system saw, and none of them by reading the code.
+
+### The browser version
+
+`docs/` is a direct port of the Python: the same feature code, the same thresholds, and the two forests flattened into JSON. Before the camera starts, the page runs 15 real frames through the model, compares the results with the answers Python gives for those same frames, and reports the outcome in the readout. A silent difference between the two implementations would look exactly like a poor model, so it is worth checking on every load.
 
 ---
 
@@ -368,15 +378,15 @@ In rough order of how much they matter:
 - **No pinned dependencies.** A `requirements.txt` at the versions above would make the notebooks reproducible rather than approximately reproducible.
 - **Large artifacts are committed:** `sign_mnist_train.csv` at 83.3 MB, `sign_mnist_test.csv` at 21.8 MB, and 2,400 full-resolution JPEGs. The captured frames have to live somewhere, but Sign-MNIST is a public dataset and could be fetched on demand instead of vendored.
 
-Approach C fixes the first three of those — scale-normalized features, a second, third and fourth capture session, and a V recorded properly — and leaves the notebooks themselves untouched, since their failures are the point of keeping them.
+Approach C addresses the first three of these: the features are scale-normalized, there are now four capture sessions rather than one, and V was recorded properly. The notebooks themselves are left as they were, since their failures are the reason for keeping them.
 
-Three things I would build rather than fix — written before `temporal/` existed, and all three are now in it:
+Three things I would build rather than fix, written before `temporal/` existed. All three are now part of it:
 
 - **An unknown / no-hand rejection path**, so a model can decline to answer instead of asserting a letter at 99% confidence. Approach A's failure mode is precisely the absence of one.
 - **A small MLP on the same 42-D features**, to find out whether the representation or the classifier is the binding constraint. Nothing in this repository currently distinguishes the two.
 - **A temporal buffer over the last N frames** — majority voting would stop single-frame flicker reaching the display, and classifying a *sequence* of 42-D vectors is the only route to J and Z, which the single-frame setting cannot reach at all.
 
-They became, respectively: the emission rule that abstains unless a vote is either confident or decisive; the 101-D feature, whose distance block is exactly the test of whether the representation or the classifier was binding; and the vote window plus the motion branch. What none of them fixed is the one limitation that outlived every rewrite — **it is still one signer.** Nothing here says anything about a different person's hands, and everyone who opens the hosted demo is a different person.
+The first became the emission rule, which abstains unless a vote is either confident or clearly ahead of the runner-up. The second became the 101-value feature, whose block of pairwise distances tests directly whether the representation or the classifier was the limiting factor. The third became the vote window and the motion branch. None of them addresses the limitation that has outlasted every rewrite: this is still one signer. Nothing here tells you how the models behave on a different person's hands, and everyone who opens the hosted demo is a different person.
 
 ---
 

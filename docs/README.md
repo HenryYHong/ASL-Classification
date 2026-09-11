@@ -111,8 +111,8 @@ them; the browser reproduces the Python's arithmetic, not its accuracy.
 | `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-**0.759 is the honest number**, and the 0.659 beneath it is the honest reading of the honest
-number. The in-session figure is inflated: consecutive frames of one held sign are
+**0.759 is the figure worth quoting, and 0.659 is the one to read beside it.**
+The in-session figure is inflated: consecutive frames of one held sign are
 near-duplicates, so they sit on both sides of any random split. The gap is not noise — chasing
 the in-session number actively hurt, and adding absolute hand extent took it from 0.956 to 0.983
 while *halving* cross-session accuracy, 0.520 to 0.262. Two of the four sessions are targeted

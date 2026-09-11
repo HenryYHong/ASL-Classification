@@ -47,11 +47,12 @@ Measured, with the split each number came from:
 | Gate: `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-**The 0.759 is the honest number, and the 0.659 is how to read it.** Two of the four sessions
-are targeted re-recordings covering six and four letters; folds that test four well-separated
-shapes score 1.000 and mean nothing, which is exactly the criticism the top-level README makes
-of a 100.00% measured with a letter missing from the test set. `crossval_static.py` prints the
-per-fold table for that reason, and prints the unweighted mean beside a warning not to quote it. The in-session figure is inflated the same way the original
+**0.759 is the figure worth quoting, and 0.659 is the one to read beside it.** Two of the four
+sessions are short re-recordings covering six and four letters, and a fold that tests four
+well-separated shapes scores 1.000 without telling us much. That is the same criticism the
+top-level README makes of a 100.00% measured with one letter missing from the test set.
+`crossval_static.py` prints the per-fold table for that reason, and prints the unweighted mean
+beside a note not to quote it. The in-session figure is inflated the same way the original
 99.58% was: consecutive frames of one held sign are near-duplicates, so they sit on both sides of
 any random split. Chasing the in-session number actively hurt: adding absolute hand extent took it
 from 0.956 to 0.983 while *halving* cross-session accuracy, 0.520 to 0.262.

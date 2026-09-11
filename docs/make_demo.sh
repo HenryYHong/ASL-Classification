@@ -67,8 +67,8 @@ ffmpeg -nostdin -loglevel error -y "${CUT[@]}" -i "$SRC" \
 # inline player at better quality than any GIF. The committed GIF is what a clone gets.
 echo "wrote $OUT_MP4 ($(du -h "$OUT_MP4" | cut -f1)) -- not committed; drag it into a GitHub editor for an inline player"
 
-# Two passes: one to build a palette from the clip's own colours, one to apply it. A single-pass
-# GIF uses the default 216-colour web palette and turns the camera feed into mud.
+# Two passes: one to build a palette from the clip's own colors, one to apply it. A single-pass
+# GIF uses the default 216-color web palette and turns the camera feed into mud.
 #
 # Three settings do the real work on a clip of a camera feed, and they are not obvious:
 #
@@ -89,7 +89,7 @@ for spec in "800 12 96" "720 10 96" "720 10 64" "640 10 64"; do
   ffmpeg -nostdin -loglevel error -y "${CUT[@]}" -i "$SRC" -i "$PAL" \
     -lavfi "$BASE[v];[v][1:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT_GIF"
   BYTES=$(wc -c < "$OUT_GIF")
-  echo "  ${W}px @ ${F}fps, ${C} colours -> $((BYTES / 1024)) KB"
+  echo "  ${W}px @ ${F}fps, ${C} colors -> $((BYTES / 1024)) KB"
   [ "$BYTES" -le "$MAX_BYTES" ] && break
 done
 rm -f "$PAL"
