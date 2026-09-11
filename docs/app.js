@@ -186,6 +186,8 @@ function boot() {
 
   let th = null;
   let seg = null;
+const trackLog = [];
+let nTracks = 0;
   let landmarker = null;
   let stream = null;
   let running = false;
@@ -287,7 +289,21 @@ function boot() {
     try {
       // Classes are left to default: forest.js keeps models.json's class list on the prepared
       // model and segmenter.js reads it from there, so there is one list, not two.
-      seg = new Segmenter(th, { staticModel: models.static, motionModel: models.motion });
+      // Track outcomes are otherwise invisible: a gesture that never arms, or one killed by a
+      // veto, leaves no trace on screen at all. Every hard bug in the Python was found by
+      // logging exactly this, so the browser gets the same instrument.
+      seg = new Segmenter(th, {
+        staticModel: models.static,
+        motionModel: models.motion,
+        onEvent: (ev) => {
+          trackLog.unshift({
+            dur: ev.duration, arm: ev.arm,
+            reason: ev.reason || 'scored', t: ev.t_end,
+          });
+          trackLog.length = Math.min(trackLog.length, 6);
+          nTracks += 1;
+        },
+      });
     } catch (err) {
       problem(`The segmenter rejected the thresholds in models.json: ${err.message}`, true);
       return;
@@ -609,6 +625,12 @@ function boot() {
     fill(ui.vmeter, seg.vBar, vMax());
     fill(ui.smeter, seg.sigma, sMax());
     ui.fps.textContent = `${fpsFrom(frameTimes).toFixed(1)} fps`;
+    if (ui.vetoval) {
+      ui.vetoval.textContent = nTracks === 0
+        ? 'no gesture tracks yet - park in the launch pose, then move'
+        : `${nTracks} tracks | ` + trackLog.slice(0, 3)
+            .map((x) => `${x.arm}:${x.dur.toFixed(2)}s ${x.reason}`).join('  |  ');
+    }
 
     // The gate fractions come from the segmenter's own method over its own buffer. A
     // reimplementation here could drift from the state machine and make the overlay lie about
