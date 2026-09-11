@@ -39,14 +39,19 @@ Measured, with the split each number came from:
 | | result | split |
 | --- | --- | --- |
 | Static letters, in-session | 0.968 | held-out tail of each capture burst |
-| **Static letters, leave-one-session-out** | **0.769** | train on all but one session, test on it |
+| **Static letters, leave-one-session-out** | **0.759** | `crossval_static.py`: train on all but one session, test on it |
+| — the fold that tests all 24 letters | 0.659 | hold out the archive, train on the later sessions |
 | Motion letters {J, Z, MOVE} | 0.864 | GroupKFold over 140 independent gestures |
 | Motion, at the runtime operating point | 92% correct when it fires, 16% abstain | same |
 | False J/Z on held-out negatives | 2 of 55 | same |
 | Gate: `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-**The 0.769 is the honest number.** The in-session figure is inflated the same way the original
+**The 0.759 is the honest number, and the 0.659 is how to read it.** Two of the four sessions
+are targeted re-recordings covering six and four letters; folds that test four well-separated
+shapes score 1.000 and mean nothing, which is exactly the criticism the top-level README makes
+of a 100.00% measured with a letter missing from the test set. `crossval_static.py` prints the
+per-fold table for that reason, and prints the unweighted mean beside a warning not to quote it. The in-session figure is inflated the same way the original
 99.58% was: consecutive frames of one held sign are near-duplicates, so they sit on both sides of
 any random split. Chasing the in-session number actively hurt: adding absolute hand extent took it
 from 0.956 to 0.983 while *halving* cross-session accuracy, 0.520 to 0.262.
@@ -63,7 +68,8 @@ second one is what fixed it.
 ./.venv/bin/python temporal/collect_motion.py --camera 0 --static-letters --reps 3
 ./.venv/bin/python temporal/label_events.py                        # cut events; READ its output
 ./.venv/bin/python temporal/train_motion.py
-./.venv/bin/python temporal/train_static.py --extra static_s2.npz static_s3.npz
+./.venv/bin/python temporal/train_static.py --extra static_s2.npz static_s3.npz static_s4.npz
+./.venv/bin/python temporal/crossval_static.py                     # the number worth quoting
 ./.venv/bin/python temporal/live_demo.py --camera 0 --log tracks.jsonl
 ```
 
@@ -83,7 +89,7 @@ reasoning about the code.
   G frame in one session had an extended middle finger, which is an H; two thirds of a targeted
   re-recording did too. The correct frames were outvoted and G read as H everywhere. Dropping
   them by that rule moved cross-session accuracy 0.680 -> 0.702, and consistent K/M/S/T
-  recordings took it to 0.769.
+  recordings took it to 0.759.
 - **The static model is over-confident in-session and under-confident live**, which is why a
   letter can be correct on 100 of 100 frames and still score 0.41. Emission therefore accepts
   either a confident winner or a decisive one — see `VOTE_MARGIN_CLEAR` in `thresholds.py`.
