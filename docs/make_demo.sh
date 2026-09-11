@@ -13,6 +13,15 @@
 #   TRIM=from:to   seconds. Cuts the reach for the mouse at the end, and anything before the
 #                  first letter at the start.
 #
+# Three more, for cutting a second, smaller version of the same recording -- the one on my
+# personal site is shorter and narrower than the one in this README:
+#
+#   OUT_GIF=path  where to write the GIF. Anything other than the default also skips the README
+#                 embed, since that line should point at the committed demo and nothing else.
+#   OUT_MP4=path  same, for the mp4.
+#   LADDER=...    "width fps colors" triples separated by |, tried in order until one fits
+#                 under 10 MB.
+#
 # The values that produced the committed demo.gif are in the README table below this block.
 # GitHub renders an animated GIF inline from a path in the repo; it does NOT render an <video>
 # tag or a committed .mp4, which is why the GIF is the artifact that matters here. The mp4 is
@@ -24,8 +33,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-OUT_GIF="docs/demo.gif"
-OUT_MP4="docs/demo.mp4"
+DEFAULT_GIF="docs/demo.gif"
+OUT_GIF="${OUT_GIF:-$DEFAULT_GIF}"
+OUT_MP4="${OUT_MP4:-docs/demo.mp4}"
+LADDER="${LADDER:-800 12 96|720 10 96|720 10 64|640 10 64}"
 MAX_BYTES=$((10 * 1024 * 1024))     # GitHub renders larger files, but slowly and badly on mobile
 
 # The shot used for the committed demo, from a 2968x2026 "Record Selected Portion" capture:
@@ -81,7 +92,8 @@ echo "wrote $OUT_MP4 ($(du -h "$OUT_MP4" | cut -f1)) -- not committed; drag it i
 #               that does not compress. On flat UI plus one camera rectangle it costs little and
 #               saves a third again.
 PAL="$(mktemp -t aslpal).png"
-for spec in "800 12 96" "720 10 96" "720 10 64" "640 10 64"; do
+IFS='|' read -ra RUNGS <<< "$LADDER"
+for spec in "${RUNGS[@]}"; do
   set -- $spec; W="$1"; F="$2"; C="$3"
   BASE="${PRE}hqdn3d=4:4:6:6,fps=$F,scale=$W:-2:flags=lanczos"
   ffmpeg -nostdin -loglevel error -y "${CUT[@]}" -i "$SRC" \
@@ -101,8 +113,9 @@ fi
 # Deliberately NOT speeding the clip up to save frames. A recognizer's demo is partly a claim
 # about its latency, and 1.25x would quietly overstate it.
 
-# Wire it into the README the first time only, right under the title.
-if ! grep -q 'docs/demo.gif' README.md; then
+# Wire it into the README the first time only, right under the title, and only for the demo the
+# README is actually about.
+if [ "$OUT_GIF" = "$DEFAULT_GIF" ] && ! grep -q 'docs/demo.gif' README.md; then
   /usr/bin/python3 - <<'PY'
 lines = open('README.md').read().split('\n')
 i = next(k for k, l in enumerate(lines) if l.startswith('# '))
