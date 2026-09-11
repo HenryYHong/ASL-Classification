@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASL fingerspelling recognizer</title>
+<style>
+/* One dark theme, no framework. Colours for the four segmenter states are the same ones
+   live_demo.py draws, converted from OpenCV's BGR: SETTLING (0,200,255) is amber, HOLD
+   (0,255,0) green, TRACKING (0,128,255) orange. Keeping them identical means a screenshot of
+   the browser and a screenshot of the Python demo can be compared directly. */
+:root {
+  --bg: #0e1012;
+  --panel: #16191c;
+  --line: #262b30;
+  --ink: #e6e8ea;
+  --dim: #93999f;
+  --accent: #ffb43c;
+  --no-hand: #787878;
+  --settling: #ffc800;
+  --hold: #23d35a;
+  --tracking: #ff8000;
+  --err: #ff6b5e;
+  --ok: #23d35a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body {
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  padding: 28px 18px 64px;
+}
+main { max-width: 940px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); font-weight: 600; }
+p { margin: 0 0 10px; }
+.sub { color: var(--dim); }
+.honest { color: var(--ink); border-left: 2px solid var(--accent); padding-left: 10px; margin: 14px 0; }
+.muted { color: var(--dim); font-size: 13px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 18px 0; }
+button {
+  font: inherit; font-weight: 600; color: #10130f; background: var(--accent);
+  border: 0; border-radius: 6px; padding: 9px 16px; cursor: pointer;
+}
+button:disabled { opacity: 0.45; cursor: default; }
+button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
+
+/* The video is deliberately NOT mirrored by CSS. It sits under an opaque canvas that covers it
+   completely; the mirror happens once, at draw time, in app.js. Mirroring here would be
+   harmless on its own, but the habit of mirroring in two places is how the frame handed to
+   MediaPipe ends up flipped -- which inverts the handedness label the features depend on. */
+#stagewrap { position: relative; background: #000; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+#cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#view { position: relative; display: block; width: 100%; height: auto; z-index: 1; }
+
+#outbar { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+#letters {
+  flex: 1; min-height: 46px; padding: 8px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 26px; letter-spacing: 0.22em; word-break: break-all; color: var(--hold);
+}
+#letters:empty::before { content: "nothing signed yet"; color: var(--dim); font-size: 14px; letter-spacing: 0; }
+
+/* --- debug panel ------------------------------------------------------------------------
+   This is not decoration. The likeliest failure in this system is a gate or a trigger that
+   never fires: J simply becomes unreachable while the page looks perfectly healthy, because it
+   still recognizes the other 24 letters. Nothing in the emitted string distinguishes "no J was
+   signed" from "J cannot be signed". The meters draw each threshold as a tick so you can see
+   that v_bar is sitting just under V_MOVE_ARMED and never crossing it. */
+.row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.row .label { width: 78px; color: var(--dim); font-size: 13px; }
+.row .value { width: 62px; text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+.meter { position: relative; flex: 1; height: 16px; background: #23282c; border: 1px solid #333a40; border-radius: 3px; overflow: hidden; }
+.meter .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); width: 0; }
+.meter .tick { position: absolute; top: -2px; bottom: -2px; width: 1px; }
+.ticklab { font-size: 11px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
+#state { font-weight: 700; letter-spacing: 0.06em; }
+#armtag { font-weight: 700; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; }
+.kv { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; color: var(--dim); }
+.kv b { color: var(--ink); font-weight: 600; }
+#emlog { margin-top: 10px; max-height: 96px; overflow: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--dim); }
+.err { color: var(--err); }
+.ok { color: var(--ok); }
+#fatal { border-color: var(--err); }
+footer { color: var(--dim); font-size: 13px; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 26px; }
+footer p { margin: 0 0 8px; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ASL fingerspelling recognizer</h1>
+    <p class="sub">MediaPipe Hands finds the hand, a random forest reads the handshape, and a
+      state machine decides when a letter was actually signed. All of it runs in this tab.</p>
+    <p class="honest">The model was trained on <b>one signer</b> across three sessions. Measured
+      leave-one-session-out accuracy is <b>0.680</b> for the static letters and <b>0.889</b> for
+      J and Z over 118 independent gestures; your hands are not that signer's hands, so expect
+      worse than those numbers here.</p>
+    <p class="muted">Fingerspelling only: 26 letters, one at a time. No words, no grammar.</p>
+  </header>
+
+  <section id="consent" class="card">
+    <h2>Camera</h2>
+    <p>The camera feed is read by this page and nothing else. Frames go to a MediaPipe model
+      running in WebAssembly in this tab, are turned into 21 landmark coordinates, and are
+      discarded on the next frame. There is no server to send them to: this page is static
+      files, the recognizer is JavaScript, and no image, landmark or letter ever leaves your
+      browser. Stopping the camera or closing the tab ends it.</p>
+    <p><button id="start" disabled>Allow camera and start</button>
+       <button id="stop" class="ghost" hidden>Stop camera</button></p>
+    <p id="loadstate" class="muted">loading the recognizer&hellip;</p>
+  </section>
+
+  <section id="stage" hidden>
+    <div id="stagewrap">
+      <video id="cam" playsinline muted autoplay></video>
+      <canvas id="view" width="960" height="540"></canvas>
+    </div>
+    <div id="outbar">
+      <div id="letters"></div>
+      <button id="clear" class="ghost">Clear</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Debug</h2>
+    <div class="row">
+      <div class="label">state</div>
+      <div id="state" class="mono" style="width:110px">NO_HAND</div>
+      <div id="armtag" class="mono">gate none</div>
+      <div style="flex:1"></div>
+      <div id="fps" class="kv">-- fps</div>
+    </div>
+
+    <div class="row">
+      <div class="label">v_bar</div>
+      <div id="vval" class="value">0.00</div>
+      <div class="meter" id="vmeter"><div class="fill"></div></div>
+      <div class="ticklab" id="vticks"></div>
+    </div>
+    <div class="row">
+      <div class="label">sigma</div>
+      <div id="sval" class="value">0.000</div>
+      <div class="meter" id="smeter"><div class="fill"></div></div>
+      <div class="ticklab" id="sticks"></div>
+    </div>
+
+    <div class="grid" style="margin-top:12px">
+      <!-- The two threshold readouts start blank on purpose. Writing today's numbers in as
+           placeholders would make the page state a threshold it is not using the moment
+           models.json is re-exported from a recalibrated thresholds.py; app.js fills them from
+           the file it actually hands the segmenter. -->
+      <div class="kv">gate J <b id="jf">0.00</b> &nbsp; Z <b id="zf">0.00</b> &nbsp; arm&ge;<span id="armfrac">--</span></div>
+      <div class="kv">rigid <b id="srigid">0.000</b> &nbsp; veto&gt;<span id="vetoval">--</span></div>
+      <div class="kv">track <b id="track">-</b></div>
+      <div class="kv">last <b id="lastem">-</b></div>
+      <div class="kv">self-check <b id="selfcheck">not run</b></div>
+    </div>
+    <div id="emlog"></div>
+    <p class="muted" style="margin-top:12px">v_bar is palm-widths per second, smoothed over
+      <span id="vsmooth">--</span>&nbsp;s; sigma is how far the handshape has drifted from its own trailing median, in
+      palm units. A letter is emitted when a hold is first established, so holding A for ten
+      seconds gives one A. J and Z are only attempted after the hand is parked in their launch
+      pose and then moves &mdash; if the J gate fraction never reaches the arming line, J is
+      unreachable no matter how well you sign it.</p>
+  </section>
+
+  <section id="fatal" class="card" hidden><h2>Problem</h2><p id="fatalmsg" class="err"></p></section>
+
+  <footer>
+    <p>Thresholds are the archive defaults: percentiles measured on one camera at about 15 fps,
+      not on yours. They are what decides that a hand is still, or that a gesture has begun.</p>
+    <p>The model file is about 8&nbsp;MB and MediaPipe's WASM bundle is another 9&nbsp;MB; both
+      are fetched once and cached by the browser. J and Z need the motion branch, which fires
+      only on a deliberate, complete gesture and abstains rather than guess.</p>
+    <p>G, M, S and T are the letters that drift most between sittings and are the likeliest to
+      be read as H, E, E and N. That is a data limitation, not a threshold to tune.</p>
+  </footer>
+</main>
+
+<script>
+// Classic script, loaded before the module, for the failures a module cannot report about
+// itself. If app.js or one of its imports 404s, the module graph never executes and the page
+// would otherwise sit there looking merely slow.
+window.__aslFatal = function (msg) {
+  var box = document.getElementById("fatal");
+  var p = document.getElementById("fatalmsg");
+  if (!box || !p) { return; }
+  box.hidden = false;
+  p.textContent = String(msg);
+  var ls = document.getElementById("loadstate");
+  if (ls) { ls.textContent = "stopped: see the problem above"; }
+  var btn = document.getElementById("start");
+  if (btn) { btn.disabled = true; }
+};
+window.addEventListener("error", function (e) {
+  if (window.__aslBooted) { return; }
+  window.__aslFatal("The page failed to start: " + (e.message || e.type) + ". Check the browser console.");
+});
+window.addEventListener("unhandledrejection", function (e) {
+  if (window.__aslBooted) { return; }
+  window.__aslFatal("The page failed to start: " + ((e.reason && e.reason.message) || e.reason));
+});
+// The watchdog exists because "downloading 17 MB over a slow link" and "the CDN is blocked"
+// look identical for the first few seconds, and only one of them ever finishes.
+setTimeout(function () {
+  if (window.__aslReady) { return; }
+  var ls = document.getElementById("loadstate");
+  var fatal = document.getElementById("fatal");
+  if (ls && fatal && fatal.hidden) {
+    ls.textContent = "still loading after 20 s. models.json is ~8 MB and MediaPipe's WASM is "
+      + "another ~9 MB, so this may just be a slow connection -- but a blocked CDN looks the "
+      + "same. The browser console says which request is outstanding.";
+  }
+}, 20000);
+</script>
+<script type="module" src="./app.js"
+        onerror="window.__aslFatal('app.js could not be loaded. Either it or one of its modules (features.js, forest.js, segmenter.js) is missing or failed to parse.')"></script>
+</body>
+</html>
