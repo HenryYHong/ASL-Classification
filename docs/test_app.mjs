@@ -232,7 +232,7 @@ for (const fps of [15, 30]) {
   // The accuracy numbers are the ones the README measured. A page that rounds them up is the
   // one thing the brief forbids outright.
   check('index.html states the measured accuracies',
-    html.includes('0.769') && html.includes('0.864') && /one signer/i.test(html));
+    html.includes('0.759') && html.includes('0.864') && /one signer/i.test(html));
   check('index.html says fingerspelling only', /no words, no grammar/i.test(html));
 }
 

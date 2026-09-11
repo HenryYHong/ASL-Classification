@@ -5,6 +5,7 @@
 <meta name="description" content="Real-time American Sign Language fingerspelling, recognized in the browser.">
 <style>
   :root {
+    color-scheme: dark;
     --bg: #08090b;
     --panel: #101216;
     --line: #1e2128;
@@ -16,6 +17,52 @@
     --settling: #d9a441;
     --hold: #6ee7a8;
     --tracking: #62a8ff;
+    --btn-line: #343a45;
+    --meter-bg: #1b1e24;
+    --tick: #565c68;
+    --rule: #2a2f38;
+  }
+  /* Light is a palette swap, nothing else: every rule below reads these variables, and the
+     overlay colours app.js sets as `var(--hold)` &c. re-resolve on their own when the attribute
+     flips. Defined twice on purpose -- once for "system says light, no choice stored", once for
+     an explicit choice, so the button can override the system in BOTH directions. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --bg: #fbfbf9;
+      --panel: #f1f1ee;
+      --line: #e1e1db;
+      --ink: #16181c;
+      --dim: #6b7079;
+      --accent: #0a7d53;
+      --err: #c33a33;
+      --no-hand: #a9aeb6;
+      --settling: #8a6210;
+      --hold: #0a7d53;
+      --tracking: #2c66e0;
+      --btn-line: #ccccd2;
+      --meter-bg: #e4e4df;
+      --tick: #8e939c;
+      --rule: #dadad4;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #fbfbf9;
+    --panel: #f1f1ee;
+    --line: #e1e1db;
+    --ink: #16181c;
+    --dim: #6b7079;
+    --accent: #0a7d53;
+    --err: #c33a33;
+    --no-hand: #a9aeb6;
+    --settling: #8a6210;
+    --hold: #0a7d53;
+    --tracking: #2c66e0;
+    --btn-line: #ccccd2;
+    --meter-bg: #e4e4df;
+    --tick: #8e939c;
+    --rule: #dadad4;
   }
   * { box-sizing: border-box; }
   /* A class rule with an explicit display beats the UA's [hidden] rule, so .curtain{display:flex}
@@ -25,6 +72,7 @@
   html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
+    transition: background-color .18s ease, color .18s ease;
     background: var(--bg);
     color: var(--ink);
     font: 15px/1.55 ui-sans-serif, -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
@@ -41,7 +89,24 @@
     font-weight: 560;
     letter-spacing: -0.015em;
   }
-  .lede { margin: 6px 0 26px; color: var(--dim); font-size: 14px; }
+  .lede { margin: 6px 0 0; color: var(--dim); font-size: 14px; }
+  .head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 26px;
+  }
+  #theme {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--dim);
+  }
 
   /* ---- stage ---- */
   .frame {
@@ -69,14 +134,14 @@
     font: inherit;
     color: var(--ink);
     background: transparent;
-    border: 1px solid #343a45;
+    border: 1px solid var(--btn-line);
     border-radius: 7px;
     padding: 9px 18px;
     cursor: pointer;
     transition: border-color .15s, color .15s;
   }
   button:hover { border-color: var(--accent); color: var(--accent); }
-  button:disabled { opacity: .45; cursor: default; border-color: #343a45; color: var(--ink); }
+  button:disabled { opacity: .45; cursor: default; border-color: var(--btn-line); color: var(--ink); }
   #loadstate { color: var(--dim); font-size: 13px; min-height: 1.2em; }
 
   /* ---- output ---- */
@@ -108,25 +173,24 @@
     flex-wrap: wrap;
     gap: 6px 10px;
   }
-  a { color: var(--dim); text-decoration: none; border-bottom: 1px solid #2a2f38; }
+  a { color: var(--dim); text-decoration: none; border-bottom: 1px solid var(--rule); }
   a:hover { color: var(--accent); border-color: var(--accent); }
 
-  /* ---- details ---- */
-  details { margin-top: 22px; }
-  summary {
-    cursor: pointer;
+  /* ---- panel ---- */
+  .panel { margin-top: 24px; }
+  h2 {
+    margin: 22px 0 0;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: .09em;
+    text-transform: uppercase;
     color: var(--dim);
-    font-size: 13px;
-    list-style: none;
   }
-  summary::-webkit-details-marker { display: none; }
-  summary::before { content: "+ "; }
-  details[open] summary::before { content: "– "; }
-  summary:hover { color: var(--ink); }
+  .panel > h2:first-child { margin-top: 0; }
   .note { color: var(--dim); font-size: 13px; margin: 14px 0 0; max-width: 56ch; }
 
   .readout {
-    margin-top: 16px;
+    margin-top: 10px;
     padding: 14px;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -140,14 +204,14 @@
   .meter {
     position: relative;
     height: 4px;
-    background: #1b1e24;
+    background: var(--meter-bg);
     border-radius: 2px;
     overflow: hidden;
     margin-top: 5px;
   }
   .meter > i { display: block; height: 100%; width: 0; background: var(--accent); }
   .tick { position: absolute; top: 0; width: 1px; height: 100%; }
-  .ticklab { font-size: 10.5px; color: #565c68; margin-top: 3px; }
+  .ticklab { font-size: 10.5px; color: var(--tick); margin-top: 3px; }
   .wide { grid-column: 1 / -1; }
 
   #fatal {
@@ -161,9 +225,25 @@
   #fatal b { display: block; margin-bottom: 4px; }
 </style>
 
+<script>
+  // Inline and before <main> on purpose: a stored choice has to land on <html> before the first
+  // paint, or the page flashes the other theme for a frame on every reload.
+  (function () {
+    try {
+      var saved = localStorage.getItem('theme');
+      if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+    } catch (e) { /* private mode: fall through to the system preference */ }
+  })();
+</script>
+
 <main>
-  <h1>ASL fingerspelling</h1>
-  <p class="lede">Communicate in Sign Language with 26 letters :)</p>
+  <header class="head">
+    <div>
+      <h1>ASL fingerspelling</h1>
+      <p class="lede">Communicate in Sign Language with 26 letters :)</p>
+    </div>
+    <button id="theme" type="button" title="Switch theme" aria-label="Switch theme">&#9789;</button>
+  </header>
 
   <div class="frame">
     <video id="cam" playsinline muted autoplay></video>
@@ -182,20 +262,8 @@
 
   <div id="fatal" hidden><b>Problem</b><span id="fatalmsg"></span></div>
 
-  <details>
-    <summary>How it works</summary>
-    <p class="note">
-      Fingerspelling only &mdash; one letter at a time, no words, no grammar. MediaPipe finds
-      21 hand landmarks; a random forest reads the handshape; a state machine decides when a
-      letter was actually signed. J and Z are motion letters, so they need a launch pose held
-      still, then the stroke. Video stays on your device.
-    </p>
-    <p class="note">
-      Trained on one signer across three sessions: 0.769 on held-out sessions for the static
-      letters, 0.864 for J and Z. Accuracy varies with hand shape and lighting, and M, N and S are the
-      least reliable.
-    </p>
-
+  <section class="panel">
+    <h2>Live readout</h2>
     <div class="readout" id="stage">
       <div><b id="state">NO_HAND</b>state</div>
       <div><b id="fps">--</b>fps</div>
@@ -221,7 +289,20 @@
       <div><b id="selfcheck">not run</b>self-check</div>
       <div class="wide"><b id="emlog">-</b>emissions</div>
     </div>
-  </details>
+
+    <h2>How it works</h2>
+    <p class="note">
+      Fingerspelling only &mdash; one letter at a time, no words, no grammar. MediaPipe finds
+      21 hand landmarks; a random forest reads the handshape; a state machine decides when a
+      letter was actually signed. J and Z are motion letters, so they need a launch pose held
+      still, then the stroke. Video stays on your device.
+    </p>
+    <p class="note">
+      Trained on one signer across four sessions: 0.759 on held-out sessions for the static
+      letters, 0.864 for J and Z. Accuracy varies with hand shape and lighting, and M, N and S
+      are the least reliable.
+    </p>
+  </section>
 
   <footer>
     <a href="https://github.com/HenryYHong/ASL-Classification">Source</a>
@@ -229,5 +310,31 @@
     <a href="https://github.com/HenryYHong/ASL-Classification/tree/main/temporal">How it was built</a>
   </footer>
 </main>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme');
+    var system = window.matchMedia('(prefers-color-scheme: light)');
+    // No attribute means "follow the system", so the effective theme is not always readable off
+    // the element -- ask the media query in that case.
+    function effective() {
+      return root.getAttribute('data-theme') || (system.matches ? 'light' : 'dark');
+    }
+    function paint() {
+      var light = effective() === 'light';
+      btn.textContent = light ? '\u263E' : '\u2600';       // moon when light, sun when dark
+      btn.title = btn.ariaLabel = light ? 'Switch to dark' : 'Switch to light';
+    }
+    btn.addEventListener('click', function () {
+      var next = effective() === 'light' ? 'dark' : 'light';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('theme', next); } catch (e) {}
+      paint();
+    });
+    system.addEventListener('change', paint);
+    paint();
+  })();
+</script>
 
 <script type="module" src="./app.js"></script>

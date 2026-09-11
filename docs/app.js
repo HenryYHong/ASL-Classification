@@ -425,7 +425,6 @@ let nTracks = 0;
     }
     ui.video.srcObject = stream;
     await ui.video.play();
-    ui.stage.hidden = false;
     if (ui.curtain) ui.curtain.hidden = true;
     ui.stop.hidden = false;
     ui.loadstate.textContent = 'running. Nothing is uploaded; stop the camera or close the tab '
@@ -444,7 +443,6 @@ let nTracks = 0;
     pxHist = [];
     frameTimes.length = 0;
     ui.video.srcObject = null;
-    ui.stage.hidden = true;
     if (ui.curtain) ui.curtain.hidden = false;
     ui.stop.hidden = true;
     ui.start.disabled = false;
