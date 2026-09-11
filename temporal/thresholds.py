@@ -192,6 +192,26 @@ class Thresholds:
     FALL_CONFIRM: float = 0.15      # seconds below V_STILL (stopped) that ends a track
     FALL_CONFIRM_SLOW: float = 0.35  # seconds below V_FALL (merely slowed) that ends a track
 
+    # --- words: segmentation and the dictionary hint ------------------------------------
+    SPACE_GAP: float = 1.20         # seconds with no hand in frame before a word break is
+                                    # inserted. MEASURED against the committed recordings, which
+                                    # separate cleanly into two populations: while a hand is up
+                                    # and tracked, consecutive frames sit 0.041s apart at the
+                                    # median and 0.076s at p99, and the longest dropout across 13
+                                    # minutes of continuous recording is 0.996s; deliberate
+                                    # hand-down rests between prompts start at 1.008s and cluster
+                                    # at 1.5-5s. 1.20 clears every observed dropout and still
+                                    # falls under the shortest rest anyone actually took.
+    WORD_MIN_RATIO: float = 0.02    # a dictionary word is offered only if the frames make it at
+                                    # least this likely relative to the letters actually read.
+                                    # The emitted string is the per-position argmax, so it always
+                                    # scores highest; this asks how far behind a real word is
+                                    # allowed to be before the hint is worth showing.
+    WORD_DOMINANCE: float = 10.0    # ...and only if that word is this many times likelier than
+                                    # the next candidate. With 150k words in the list, most
+                                    # letter strings have some same-length neighbour, and an
+                                    # ambiguous field should abstain rather than guess.
+
     # --- tier 2 (co-articulated gestures with no preceding pause) -----------------------
     TIER2_ENABLED: bool = False     # ships disabled; enable only once its false-fire rate on
                                     # held-out negative footage is measured below 1/min
@@ -224,6 +244,13 @@ class Thresholds:
 
 #: Constants that cannot be derived from held-sign footage and are currently educated guesses.
 NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN", "V_SMOOTH_WINDOW")
+
+#: The dictionary hint's two constants. SPACE_GAP is measured; these are not, because nothing in
+#: the repository is a recording of somebody spelling a word. Sweeping them needs a session of
+#: real words with their intended spellings written down -- the same discipline that retired the
+#: pre-data guesses at P_EMIT and T_MAX, both of which were wrong in the direction that loses
+#: letters silently.
+NEEDS_WORD_DATA = ("WORD_MIN_RATIO", "WORD_DOMINANCE")
 
 # V_SMOOTH_WINDOW is on that list for a reason worth stating. 0.33 s is what the archive
 # effectively used at 15 fps, so it reproduces the calibration exactly -- but held signs cannot

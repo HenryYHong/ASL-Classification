@@ -95,6 +95,47 @@ different feature definition fails loudly at load instead of quietly misclassify
 platform's `DecompressionStream`, so either file works at `./models.json`. GitHub Pages
 gzips `models.json` in transit on its own, so the plain file is what you want there.
 
+## Words: the break, and the dictionary hint
+
+The page groups letters into words and, when it can, names the word. Both halves are presentation
+layers sitting on top of recognition; neither changes a letter the model emitted.
+
+**The break.** A word ends when no hand has been detected for `SPACE_GAP`, currently 1.20 s.
+That number is measured rather than chosen. The committed recordings separate into two
+populations: while a hand is up and being tracked, consecutive frames are 0.041 s apart at the
+median and 0.076 s at p99, and the longest tracking dropout across 13 minutes of continuous
+recording is 0.996 s; deliberate hand-down rests between prompts start at 1.008 s and cluster
+between 1.5 and 5 s. 1.20 s clears every dropout anyone recorded and still falls under the
+shortest rest anyone took. The break is measured from the last frame with a hand in it, not from
+the last emission, because the pause after a word is time spent with the hand down.
+
+**The hint.** Every emitted letter now carries the whole 24-class vote that produced it, so a
+candidate spelling can be scored letter by letter against what the classifier actually saw:
+`log P(word) = sum_i log p_i(word_i)`. At a word break the page scores every dictionary word of
+the same length and offers the best one only if it clears two bars: the frames must make it at
+least `WORD_MIN_RATIO` (0.02) as likely as the letters actually read, and it must be
+`WORD_DOMINANCE` (10x) likelier than the runner-up.
+
+**Both bars exist because the list has no frequencies.** `words.txt` is built by
+`build_words.py` from macOS's `/usr/share/dict` -- Webster's Second plus `propernames`, which is
+what puts HENRY in it -- filtered to a-z and 2 to 10 letters: 150,594 entries, 1.33 MB, 438 KB
+over the wire. Webster's Second carries no notion of which words people actually use, so there
+is nothing to break a tie with, and with 150k entries almost every letter string has a
+same-length neighbour. An ambiguous field therefore says nothing rather than picking the
+alphabetically luckier archaism.
+
+**The reading is never rewritten.** The letters shown are always the letters emitted; a match
+appears underneath as a separate line, and only for two of the six verdicts (`exact`, `hint`).
+`unlikely` and `ambiguous` are the layer working correctly and are shown as silence. A silent
+auto-correct would make the recognizer look better than it measures, which is the failure this
+repository keeps removing.
+
+**`WORD_MIN_RATIO` and `WORD_DOMINANCE` are not measured.** They are in
+`thresholds.NEEDS_WORD_DATA` for that reason. Nothing committed here is a recording of somebody
+spelling a word with the intended spelling written down, and until that exists these two are
+educated guesses -- the same species of guess that `P_EMIT` at 0.70 and `T_MAX` at 1.80 turned
+out to be, both wrong in the direction that loses letters silently.
+
 ## Accuracy, and the split each number came from
 
 These are `temporal/README.md`'s numbers. Nothing about putting the model in a browser changes

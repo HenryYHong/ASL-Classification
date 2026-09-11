@@ -515,7 +515,10 @@ export class Segmenter {
     // means dropping the hand between the two, which is the physical act anyway.
     if (letter === this.lastEmitted) return null;
 
-    const em = new Emission(letter, 'static', t, meanp, { agree });
+    // The whole vote travels with the emission, not just the winner: the word layer scores
+    // candidate spellings against every letter's distribution, and re-deriving it later would
+    // mean keeping the vote buffer alive past the emission that consumed it.
+    const em = new Emission(letter, 'static', t, meanp, { agree, probs: Array.from(mean) });
     if (DEFERRED.has(letter)) {
       // Park it: a J may be about to start from this exact pose.
       this._pending = em;

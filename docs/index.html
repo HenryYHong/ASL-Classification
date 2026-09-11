@@ -162,6 +162,17 @@
   #letters:empty::after { content: "—"; color: var(--no-hand); letter-spacing: 0; }
   #clear, #stop { font-size: 13px; padding: 6px 12px; color: var(--dim); }
 
+  /* The word layer speaks here, and stays empty most of the time. Reserving the line keeps the
+     page from jumping every time a word ends. */
+  #word {
+    min-height: 1.35em;
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--dim);
+    letter-spacing: .02em;
+  }
+  #word.hint { color: var(--accent); }
+
   /* ---- footer ---- */
   footer {
     margin-top: 30px;
@@ -260,6 +271,8 @@
     <button id="stop" hidden>Stop</button>
   </div>
 
+  <div id="word" aria-live="polite"></div>
+
   <div id="fatal" hidden><b>Problem</b><span id="fatalmsg"></span></div>
 
   <section class="panel">
@@ -292,10 +305,12 @@
 
     <h2>How it works</h2>
     <p class="note">
-      Fingerspelling only &mdash; one letter at a time, no words, no grammar. MediaPipe finds
-      21 hand landmarks; a random forest reads the handshape; a state machine decides when a
-      letter was actually signed. J and Z are motion letters, so they need a launch pose held
-      still, then the stroke. Video stays on your device.
+      Fingerspelling only &mdash; one letter at a time, no ASL word signs, no grammar.
+      MediaPipe finds 21 hand landmarks; a random forest reads the handshape; a state machine
+      decides when a letter was actually signed. J and Z are motion letters, so they need a
+      launch pose held still, then the stroke. Drop your hand for a second to end a word: if one
+      real word clearly fits the letters, the page names it underneath, and if several fit or
+      none do, it says nothing. Video stays on your device.
     </p>
     <p class="note">
       Trained on one signer across four sessions: 0.759 on held-out sessions for the static

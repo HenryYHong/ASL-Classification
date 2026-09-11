@@ -29,6 +29,7 @@ import {
   TIP_FOR_ARM, pathLength, toIsotropic, canonicalizeHandedness, staticFeature,
 } from './features.js';
 import { loadModels, predictProba } from './forest.js';
+import { buildIndex, closestWord, posteriorsFor } from './words.js';
 import { Segmenter, NO_HAND, SETTLING, HOLD, TRACKING } from './segmenter.js';
 
 const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18';
@@ -181,6 +182,7 @@ function boot() {
     curtain: el('curtain'),
     jf: el('jf'), zf: el('zf'), armfrac: el('armfrac'), track: el('track'),
     lastem: el('lastem'), selfcheck: el('selfcheck'), emlog: el('emlog'),
+    word: el('word'),
     fatal: el('fatal'), fatalmsg: el('fatalmsg'),
   };
   const ctx = ui.canvas.getContext('2d');
@@ -204,6 +206,19 @@ let nTracks = 0;
   let stream = null;
   let running = false;
   let letters = [];
+  // One entry per letter of the word being spelled, each carrying the vote that produced it, so
+  // the word layer can score candidate spellings when the word ends. Cleared at every break.
+  let wordBuf = [];
+  let wordIndex = null;
+  // `models` lives inside load(); onEmission runs in this scope and cannot see it. Keeping the
+  // class list here is the fix -- reaching for models.static.classes from the emission handler
+  // throws ReferenceError on the first letter recognized, which presents as the page going
+  // silent the moment it starts working.
+  let staticClasses = null;
+  // Timestamp of the last frame a hand was actually detected in. A word break is measured from
+  // here rather than from the last emission, because the pause after the final letter of a word
+  // is time spent with the hand down, not time spent holding a letter.
+  let lastHandT = null;
   const frameTimes = [];
   // Normalized landmarks with their timestamps, kept here rather than read back out of the
   // segmenter: its buffer holds isotropic, chirality-canonicalized coordinates, which cannot be
@@ -264,6 +279,7 @@ let nTracks = 0;
     }
 
     th = models.thresholds;
+    staticClasses = models.static.classes;
     ui.armfrac.textContent = th.GATE_ARM_FRAC.toFixed(2);
     ui.vetoval.textContent = th.RIGID_VETO.toFixed(2);
     ui.vsmooth.textContent = th.V_SMOOTH_WINDOW.toFixed(2);
@@ -297,6 +313,14 @@ let nTracks = 0;
       ui.selfcheck.textContent = 'not run';
       note = `self-check skipped: ${err.message}`;
     }
+
+    // The word list is a hint, so it loads in the background and its failure is silent: a page
+    // that refused to recognize letters because a dictionary 404'd would be trading the thing
+    // that works for the thing that decorates it.
+    fetch('./words.txt')
+      .then((res) => (res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((text) => { wordIndex = buildIndex(text); })
+      .catch(() => { wordIndex = null; });
 
     try {
       // Classes are left to default: forest.js keeps models.json's class list on the prepared
@@ -518,6 +542,12 @@ let nTracks = 0;
       while (pxHist.length && t - pxHist[0].t > th.BUFFER) pxHist.shift();
     }
 
+    if (lm) {
+      lastHandT = t;
+    } else if (lastHandT !== null && t - lastHandT > th.SPACE_GAP) {
+      closeWord();
+    }
+
     let em = null;
     try {
       // The capture frame's true dimensions: the isotropy correction is u = x * (W/H), so the
@@ -542,6 +572,8 @@ let nTracks = 0;
 
   function onEmission(em, t) {
     letters.push(em.letter);
+    wordBuf.push({ letter: em.letter, post: posteriorsFor(em, staticClasses) });
+    ui.word.textContent = '';
     ui.letters.textContent = letters.join('');
     ui.lastem.textContent = `${em.letter} (${em.kind})`;
     const line = document.createElement('div');
@@ -549,6 +581,33 @@ let nTracks = 0;
     line.textContent = `${t.toFixed(2)}  ${em.letter}  ${em.kind.padEnd(6)} p=${conf}`;
     ui.emlog.prepend(line);
     while (ui.emlog.childElementCount > 40) ui.emlog.lastElementChild.remove();
+  }
+
+  /**
+   * End the word being spelled: write the break, and say what it most looks like.
+   *
+   * Called from the frame loop rather than on a timer, so it cannot fire while the page is in a
+   * background tab with no frames arriving and silently split a word in half.
+   */
+  function closeWord() {
+    if (!wordBuf.length) return;
+    const reading = wordBuf.map((x) => x.letter).join('');
+    const verdict = closestWord(reading, wordBuf.map((x) => x.post), wordIndex, th);
+    // Only two of the six verdicts are worth a visitor's attention. "unlikely" and "ambiguous"
+    // are the layer working correctly and declining to guess; announcing them would be noise.
+    if (verdict.reason === 'hint') {
+      ui.word.textContent = `closest word: ${verdict.word.toUpperCase()}`;
+      ui.word.className = 'hint';
+    } else if (verdict.reason === 'exact') {
+      ui.word.textContent = `${reading} is a word`;
+      ui.word.className = 'exact';
+    } else {
+      ui.word.textContent = '';
+      ui.word.className = '';
+    }
+    wordBuf = [];
+    letters.push(' ');
+    ui.letters.textContent = letters.join('');
   }
 
   // ---------------------------------------------------------------- drawing
@@ -696,7 +755,10 @@ let nTracks = 0;
   ui.stop.addEventListener('click', stopCamera);
   ui.clear.addEventListener('click', () => {
     letters = [];
+    wordBuf = [];
     ui.letters.textContent = '';
+    ui.word.textContent = '';
+    ui.word.className = '';
     ui.emlog.replaceChildren();
     ui.lastem.textContent = '-';
     // The segmenter is deliberately NOT reset: clearing the transcript is an edit of the text,

@@ -328,7 +328,11 @@ class Segmenter:
         if letter == self.last_emitted:
             return None
 
-        em = Emission(letter, "static", t, meanp, {"agree": agree})
+        em = Emission(letter, "static", t, meanp, {"agree": agree,
+                                                   # The whole vote, not just the winner: the
+                                                   # word layer scores candidate spellings
+                                                   # against every letter's distribution.
+                                                   "probs": [float(x) for x in mean]})
         if letter in DEFERRED:
             # Park it: a J may be about to start from this exact pose.
             self._pending = em

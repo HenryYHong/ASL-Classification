@@ -233,7 +233,8 @@ for (const fps of [15, 30]) {
   // one thing the brief forbids outright.
   check('index.html states the measured accuracies',
     html.includes('0.759') && html.includes('0.864') && /one signer/i.test(html));
-  check('index.html says fingerspelling only', /no words, no grammar/i.test(html));
+  check('index.html says fingerspelling only', /no ASL word signs, no grammar/i.test(html));
+  check('index.html explains the word break', /drop your hand for a second/i.test(html));
 }
 
 // The loaded-through-fetch path forest.js provides is what the page calls; confirm the shape it
