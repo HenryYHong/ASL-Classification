@@ -9,7 +9,7 @@ Those are properties of code that can be edited away, so they are tested here.
 
 Three kinds of assertion live in this file:
 
-  BEHAVIOURAL, on the real splitters, run over a synthetic registry of fake clips. No footage
+  BEHAVIORAL, on the real splitters, run over a synthetic registry of fake clips. No footage
   has been recorded yet, so motion_clips.npz does not exist; a test that skipped until it did
   would be a test that never ran before the mistake it guards against could be made. The clips
   are fabricated, but train_motion.cross_validate and its GroupKFold are not.
@@ -20,7 +20,7 @@ Three kinds of assertion live in this file:
 
   SOURCE-TEXT, over the shipped modules: the runtime assertions inside cross_validate and
   evaluate.main still exist, and no module reaches for a row-level splitter. These read the
-  source, so they prove a guard is present, not that it is correct -- the behavioural tests
+  source, so they prove a guard is present, not that it is correct -- the behavioral tests
   above are what prove that.
 """
 import ast
@@ -239,7 +239,7 @@ def test_static_contiguous_split_shares_no_frame():
 
     It is still a within-session split and train_static.py's own docstring says so; this test
     checks only that it does not interleave, which is what a random split over these frames
-    would do -- neighbouring frames of one held sign are near-duplicates of each other.
+    would do -- neighboring frames of one held sign are near-duplicates of each other.
     """
     per_class = [np.arange(20 + c).reshape(-1, 1, 1) + 0.0 for c in range(3)]
     tr, te = TS.contiguous_split(per_class, frac=0.8)
@@ -285,7 +285,7 @@ def test_split_assertions_still_exist():
     """The runtime guards inside the shipped splitters are present.
 
     A source check: it cannot tell whether an assertion is correct, only that deleting it is
-    visible. The behavioural tests above are what establish that the split itself is sound.
+    visible. The behavioral tests above are what establish that the split itself is sound.
     """
     want = {
         TM.cross_validate: [("train_ids", "test_ids"), ("augmented",)],
@@ -304,7 +304,7 @@ def test_no_row_level_splitter_anywhere():
     """The standing rule: no random split over frames, windows or feature rows, in any module.
 
     Only group-aware splitters may appear. train_test_split on a feature matrix is the single
-    call that would undo every structural defence in this file.
+    call that would undo every structural defense in this file.
     """
     allowed = {"GroupKFold", "GroupShuffleSplit", "StratifiedGroupKFold",
                "LeaveOneGroupOut", "LeavePGroupsOut"}

@@ -17,7 +17,7 @@ namespace, which breaks this code and both original notebooks.
 
 ## How it works
 
-**Static letters.** Every frame becomes a 101-D vector: 21 landmarks palm-centred and divided by
+**Static letters.** Every frame becomes a 101-D vector: 21 landmarks palm-centered and divided by
 palm width, plus all pairwise distances between the fingertips, knuckles and wrist. The distance
 block matters because a forest splits one coordinate at a time, so "how far apart are these two
 fingertips" — the whole difference between U and V — otherwise costs it a deep chain of splits.
@@ -26,7 +26,7 @@ A letter is emitted when a hold is first established, never per frame.
 **Motion letters.** A per-frame *gate* (six inequalities on finger geometry, no model) decides
 whether the hand is in a launch pose. A track starts only on a **rising edge** — parked in that
 pose, then moving — which is why ordinary hand travel almost never creates a scoring opportunity.
-The fingertip path becomes a 79-D descriptor: resampled by arc length, centred on itself, divided
+The fingertip path becomes a 79-D descriptor: resampled by arc length, centered on itself, divided
 by hand size, so a J traced anywhere in frame gives the same numbers.
 
 `I` and `D` are held back 350 ms before being emitted, because they are the launch poses for J

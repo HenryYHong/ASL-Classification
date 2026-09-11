@@ -301,11 +301,11 @@ def test_event_layout_straight_derivable():
     times, P = _straight_event()
     f = F.event_features(times, P, "J")
 
-    # [0:32] arc-length-resampled path, centred on its own centroid: 16 points spread from
+    # [0:32] arc-length-resampled path, centered on its own centroid: 16 points spread from
     # -L/2 to +L/2 along (0.6,-0.8), so the first two points are exactly derivable.
     assert close(f[0:2], [-1.3875 * 0.6, -1.3875 * -0.8]) < TOL
     assert close(f[2:4], [(-1.3875 + 2.775 / 15) * 0.6, (-1.3875 + 2.775 / 15) * -0.8]) < TOL
-    assert close(f[0:32].reshape(16, 2).mean(axis=0), [0.0, 0.0]) < TOL, "must be centred"
+    assert close(f[0:32].reshape(16, 2).mean(axis=0), [0.0, 0.0]) < TOL, "must be centered"
 
     assert close(f[32:46], np.zeros(14)) < TOL, "a straight path has no turning"
     assert close(f[46:51], [0.878262258463, 1.0, 1.0, 1.0, 1.75]) < TOL     # ext_med

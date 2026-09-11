@@ -99,7 +99,7 @@ class Segmenter:
         self._pending_until = 0.0
         self.last_emitted: Optional[str] = None
 
-        # Exposed for the debug overlay; the only defence against a silently non-firing gate.
+        # Exposed for the debug overlay; the only defense against a silently non-firing gate.
         self.v_bar = 0.0
         self.sigma = 0.0
         self.sigma_rigid = 0.0

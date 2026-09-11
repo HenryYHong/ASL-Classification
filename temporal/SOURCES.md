@@ -34,13 +34,13 @@ the gap this feature exists to fill.
 
 **Unverified.** Kaggle serves its dataset pages client-side, so only the title and a one-line
 description were readable without an account: *"Video data for training American Sign Language
-alphabet character recognition"*. Size, signer count and licence were not confirmed. Check three
+alphabet character recognition"*. Size, signer count and license were not confirmed. Check three
 things when it lands, because they decide whether it is worth anything:
 
 - **distinct signers** — one signer adds little over twelve minutes of your own recording; many
   signers makes it the cross-signer test set. Give each signer a distinct `--signer` id, or the
   cross-signer claim is not a cross-signer claim.
-- **licence** — this repository is public.
+- **license** — this repository is public.
 - **directory layout** — the commands above assume `J/` and `Z/` subdirectories; adjust.
 
 Video files carry width and height in the container, so `u = x*(W/H)` applies cleanly. That is a
@@ -110,7 +110,7 @@ set this is the cheapest route to signer diversity.
 `ASL Fingerspelling A` (131k samples, 5 signers) and `B` (9 signers) are **24 classes** — they
 exclude J and Z for the same reason this project did. Sign Language MNIST likewise. Kaggle's
 29-class ASL Alphabet sets *do* include J and Z, as single still images, which is worse than
-omitting them: those are mislabelled I and D. `MSL-AlphaVid` (Malayalam) and `AzSLD`
+omitting them: those are mislabeled I and D. `MSL-AlphaVid` (Malayalam) and `AzSLD`
 (Azerbaijani) have dynamic letters but different handshapes; the geometry does not transfer.
 
 ## Always run this before trusting a download

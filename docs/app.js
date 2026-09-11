@@ -178,6 +178,7 @@ function boot() {
     vval: el('vval'), vmeter: el('vmeter'), vticks: el('vticks'),
     sval: el('sval'), smeter: el('smeter'), sticks: el('sticks'),
     srigid: el('srigid'), vetoval: el('vetoval'), vsmooth: el('vsmooth'),
+    curtain: el('curtain'),
     jf: el('jf'), zf: el('zf'), armfrac: el('armfrac'), track: el('track'),
     lastem: el('lastem'), selfcheck: el('selfcheck'), emlog: el('emlog'),
     fatal: el('fatal'), fatalmsg: el('fatalmsg'),
@@ -425,6 +426,7 @@ let nTracks = 0;
     ui.video.srcObject = stream;
     await ui.video.play();
     ui.stage.hidden = false;
+    if (ui.curtain) ui.curtain.hidden = true;
     ui.stop.hidden = false;
     ui.loadstate.textContent = 'running. Nothing is uploaded; stop the camera or close the tab '
       + 'to end it.';
@@ -443,6 +445,7 @@ let nTracks = 0;
     frameTimes.length = 0;
     ui.video.srcObject = null;
     ui.stage.hidden = true;
+    if (ui.curtain) ui.curtain.hidden = false;
     ui.stop.hidden = true;
     ui.start.disabled = false;
     ui.loadstate.textContent = 'camera stopped';
@@ -496,7 +499,7 @@ let nTracks = 0;
       // it was unflipped in training.
       const hs = res.handednesses || res.handedness;
       if (hs && hs.length && hs[0].length) {
-        // SWAP the label. The two MediaPipe APIs disagree about what they are labelling: the
+        // SWAP the label. The two MediaPipe APIs disagree about what they are labeling: the
         // legacy `solutions` API that produced every training landmark reports handedness as if
         // the image were mirrored (the selfie convention), while the Tasks API reports it for
         // the frame exactly as given. Same hand, same unflipped frame, opposite word.

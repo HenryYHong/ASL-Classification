@@ -521,17 +521,17 @@ def letter_error_rate(test_clips, th, static, static_classes, motion, motion_cla
     takes = [c for c in test_clips
              if (c.label in SPELL_LABELS or c.intended) and c.intended]
     if not takes:
-        unlabelled = [c for c in test_clips if c.label in SPELL_LABELS]
-        if unlabelled:
-            print(f"  not computable: {len(unlabelled)} continuous session-2 takes are "
+        unlabeled = [c for c in test_clips if c.label in SPELL_LABELS]
+        if unlabeled:
+            print(f"  not computable: {len(unlabeled)} continuous session-2 takes are "
                   "recorded, but none\n  carries the string that was actually signed. Nothing "
                   "in the capture path knows it,\n  and it is not inferred from the emissions "
                   "-- that would score the system against its\n  own output. Write it down "
                   "and pass --intended with a JSON object keyed by clip id:")
-            for c in unlabelled[:10]:
+            for c in unlabeled[:10]:
                 print(f'      "{c.clip_id}": "..."   ({c.duration:.1f} s)')
-            if len(unlabelled) > 10:
-                print(f"      ... and {len(unlabelled) - 10} more")
+            if len(unlabeled) > 10:
+                print(f"      ... and {len(unlabeled) - 10} more")
         else:
             print("  not computable: session 2 holds no continuous fingerspelling take.")
         return

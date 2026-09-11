@@ -157,7 +157,7 @@ def main():
     # sees each handshape at essentially a single wrist angle and is over-confident about it --
     # which shows up live as correct-but-under-confident predictions that fall below the
     # emission floor and abstain silently. Rotating the normalized shape is exact (shape42 is
-    # already centred and scaled, so a rotation is a rigid transform of the feature) and costs
+    # already centered and scaled, so a rotation is a rigid transform of the feature) and costs
     # no new data. Measured on the contiguous split: mean winner confidence 0.818 -> 0.886 and
     # A's confidence 0.88 -> 1.00, with accuracy unchanged within noise (0.908 -> 0.914).
     # Rotate the LANDMARKS and re-featurize, rather than rotating the feature vector: the

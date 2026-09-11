@@ -4,7 +4,7 @@ No number here is a guess. Each default is a percentile of a signal measured ove
 committed archive (RandomForest/data/, 24 held signs, 2,378 usable frames, 157 s of signing
 at ~15 fps), reproduced by temporal/calibrate.py. Values marked NEEDS-GESTURE-DATA cannot be
 derived from held signs and must be recalibrated once J/Z footage exists -- they are the only
-guesses in the system and they are labelled as such.
+guesses in the system and they are labeled as such.
 
 Units are SECONDS and PALM-WIDTHS throughout, never frames or pixels. Frame rate is not
 constant on a webcam, and pixel distances change with camera distance; both would make these
@@ -219,8 +219,8 @@ NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN", "V_SMO
 # triggers, and also blunts the onset of a real one: raising it from an effective 0.17 s to
 # 0.33 s on 19 minutes of third-party video took candidate events from 15 to 11, recovering a Z
 # that had been undetectable while losing several J candidates. Both directions are real. The
-# window and V_MOVE_ARMED must be swept together against labelled J/Z footage, choosing the pair
-# that maximises recall at a fixed false-fire rate. Until then this is the frame-rate-invariant
+# window and V_MOVE_ARMED must be swept together against labeled J/Z footage, choosing the pair
+# that maximizes recall at a fixed false-fire rate. Until then this is the frame-rate-invariant
 # choice, not the tuned one.
 
 DEFAULT = Thresholds()

@@ -1,8 +1,8 @@
-// Behavioural check for segmenter.js.  Run:  /usr/local/bin/node web/test_segmenter.mjs
+// Behavioral check for segmenter.js.  Run:  /usr/local/bin/node web/test_segmenter.mjs
 //
 // Reading the port next to temporal/segmenter.py is not evidence. This drives synthetic streams
 // built from the real landmarks in golden.json through the real forests in models.json, and
-// asserts the behaviour the Python specifies -- including the two mechanisms that broke silently
+// asserts the behavior the Python specifies -- including the two mechanisms that broke silently
 // in the Python and would break just as silently here:
 //
 //   * the static vote completes on EITHER a time span OR VOTE_MIN votes, so a held letter emits
@@ -217,7 +217,7 @@ console.log('\n--- deferral of the launch poses ---');
 // ---------------------------------------------------------------- 3. the gap rules
 //
 // GAP_RESET clears the buffer, the state and lastEmitted; anything shorter does not. Dropping
-// the hand is how the signer spells a doubled letter, so this is user-visible behaviour, not
+// the hand is how the signer spells a doubled letter, so this is user-visible behavior, not
 // housekeeping.
 
 console.log('\n--- detection gaps ---');
@@ -369,7 +369,7 @@ console.log('\n--- flush ---');
 // at sigmaRigid 0.32 against a threshold of 1.15, exactly as thresholds.py records (held signs
 // top out at 0.35 under the aligned measure; 1.15 was calibrated on 90 real gestures). A
 // synthetic that tripped it would have to distort the hand past anything MediaPipe emits, and
-// would test the number rather than the behaviour.
+// would test the number rather than the behavior.
 
 console.log('\n--- tracks that end badly ---');
 {

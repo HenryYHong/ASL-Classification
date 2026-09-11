@@ -179,8 +179,8 @@ invariant('staticFeature scale/translate-free',
           maxAbsDiff(staticFeature(HAND), staticFeature(scaled)) < 1e-12,
           `max|d| = ${maxAbsDiff(staticFeature(HAND), staticFeature(scaled)).toExponential(2)}`);
 
-// A geometrically mirrored hand LABELLED Left must land on exactly the same feature as the
-// original labelled Right. That is the entire chirality convention, stated as an equation.
+// A geometrically mirrored hand LABELED Left must land on exactly the same feature as the
+// original labeled Right. That is the entire chirality convention, stated as an equation.
 const mirrored = HAND.map((p) => [-p[0], p[1]]);
 const dChiral = maxAbsDiff(staticFeature(canonicalizeHandedness(mirrored, 'Left')),
                            staticFeature(canonicalizeHandedness(HAND, 'Right')));

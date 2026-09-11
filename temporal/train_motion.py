@@ -9,7 +9,7 @@ the augmented copies of a take are correlated with it and with each other, so a 
 split would put a time-warped copy of a test gesture into training and report a number that
 means "can the forest re-identify this take" rather than "does it recognize a J". That is
 the exact mistake the README documents this project already making once, and the structural
-defence -- not the disciplinary one -- is that the array handed to the splitter has one row
+defense -- not the disciplinary one -- is that the array handed to the splitter has one row
 per clip, and feature rows are materialised only afterwards, inside each side. Augmentation
 runs on the training side only, and both facts are asserted at runtime rather than tested.
 
@@ -191,7 +191,7 @@ def load_clips_cut(path, aspect, handedness, th):
     score -- it would cross-validate beautifully and recognize nothing live.
 
     Reusing label_events.harvest rather than reimplementing the cut keeps a single definition
-    of "where does an event start and stop" across labelling, training and inference.
+    of "where does an event start and stop" across labeling, training and inference.
     """
     import label_events as LE
 
@@ -545,7 +545,7 @@ def report_runtime_reachability(clips):
     """How many recorded clips the segmenter's pre-model vetoes would have thrown away.
 
     A J the runtime vetoes before the classifier ever sees it is a J the system cannot
-    recognise no matter how good this model is, so the count belongs in the training report
+    recognize no matter how good this model is, so the count belongs in the training report
     and not in a separate evaluation nobody runs.
     """
     th = DEFAULT

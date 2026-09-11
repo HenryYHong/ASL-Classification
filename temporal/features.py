@@ -89,7 +89,7 @@ def palm_centre(P):
 
 
 def shape42(P):
-    """(...,21,2) -> (...,42) palm-centred, palm-scaled landmark shape.
+    """(...,21,2) -> (...,42) palm-centered, palm-scaled landmark shape.
 
     Deliberately NOT rotation-normalized: orientation is what separates P from K and H from U.
     """
@@ -308,7 +308,7 @@ def rolling_shape_sigma_aligned(shapes, times, window_s=0.4):
         j = np.searchsorted(times, times[i] - window_s)
         ref = np.median(shapes[j:i + 1], axis=0).reshape(21, 2)
         cur = shapes[i].reshape(21, 2)
-        # Optimal rotation taking cur onto ref; both are already centred and palm-scaled.
+        # Optimal rotation taking cur onto ref; both are already centered and palm-scaled.
         H = cur.T @ ref
         U, _, Vt = np.linalg.svd(H)
         d = np.sign(np.linalg.det(Vt.T @ U.T))

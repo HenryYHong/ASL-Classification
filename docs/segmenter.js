@@ -183,7 +183,7 @@ export class Segmenter {
     this._pendingUntil = 0.0;
     this.lastEmitted = null;
 
-    // Exposed for the debug overlay; the only defence against a silently non-firing gate.
+    // Exposed for the debug overlay; the only defense against a silently non-firing gate.
     this.vBar = 0.0;
     this.sigma = 0.0;
     this.sigmaRigid = 0.0;

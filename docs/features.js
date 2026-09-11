@@ -199,7 +199,7 @@ export function palmCentre(P) {
   return [sx / PALM.length, sy / PALM.length];
 }
 
-/** (21,2) -> (42,) palm-centred, palm-scaled landmark shape.
+/** (21,2) -> (42,) palm-centered, palm-scaled landmark shape.
  *
  * Deliberately NOT rotation-normalized: orientation is what separates P from K and H from U.
  */
@@ -357,15 +357,15 @@ export function rollingShapeSigma(shapes, times, windowS = 0.4) {
  * THE 2-D KABSCH, IN CLOSED FORM. The Python calls numpy's SVD; there is no SVD here and
  * pulling in a linear-algebra library for a 2x2 would be absurd, so derive it instead.
  *
- *   Let c_k be the current shape's landmarks and r_k the reference's; both are already centred
+ *   Let c_k be the current shape's landmarks and r_k the reference's; both are already centered
  *   (shape42 subtracts the palm centre) and palm-scaled, so only a rotation is left to fit.
- *   Minimising sum_k |R c_k - r_k|^2 over rotations R means maximising sum_k r_k . (R c_k),
+ *   Minimizing sum_k |R c_k - r_k|^2 over rotations R means maximizing sum_k r_k . (R c_k),
  *   which is sum_k tr(R c_k r_k^T) = tr(R H) with H = sum_k c_k r_k^T = cur^T @ ref -- the same
  *   cross-covariance the Python builds.
  *
  *   Write a proper rotation as R = [[cos t, -sin t], [sin t, cos t]]. Then
  *       tr(R H) = cos t * (H00 + H11) + sin t * (H01 - H10),
- *   a single sinusoid in t, maximised when (cos t, sin t) points along (H00+H11, H01-H10).
+ *   a single sinusoid in t, maximized when (cos t, sin t) points along (H00+H11, H01-H10).
  *   So cos t and sin t are that vector normalized -- no iteration, no decomposition.
  *
  *   This is exactly what numpy's route returns: the det-correction R = V diag(1,d) U^T with

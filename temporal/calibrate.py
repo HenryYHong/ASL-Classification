@@ -290,16 +290,16 @@ def _phase(cap, hands, drawer, prompt, seconds, countdown=2.0):
         disp = cv2.flip(frame, 1)
         if elapsed < countdown:
             banner = [(prompt, 0.9), (f"starting in {countdown - elapsed:.1f}", 0.8)]
-            colour = (0, 200, 255)
+            color = (0, 200, 255)
         else:
             banner = [(prompt, 0.9),
                       (f"{seconds - (time.perf_counter() - t0):.1f} s left", 0.8),
                       ("hand: yes" if hand is not None else "hand: NOT FOUND", 0.8)]
-            colour = (0, 255, 0) if hand is not None else (0, 0, 255)
+            color = (0, 255, 0) if hand is not None else (0, 0, 255)
         y = 40
         for text, scale in banner:
             cv2.putText(disp, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 5)
-            cv2.putText(disp, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, scale, colour, 2)
+            cv2.putText(disp, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 2)
             y += int(38 * scale) + 12
         cv2.imshow("calibrate", disp)
         if cv2.waitKey(1) & 0xFF == ord("q"):
