@@ -40,9 +40,9 @@ Measured, with the split each number came from:
 | --- | --- | --- |
 | Static letters, in-session | 0.968 | held-out tail of each capture burst |
 | **Static letters, leave-one-session-out** | **0.769** | train on all but one session, test on it |
-| Motion letters {J, Z, MOVE} | 0.889 | GroupKFold over 118 independent gestures |
-| Motion, at the runtime operating point | 96% correct when it fires, 22% abstain | same |
-| False J/Z on held-out negatives | 0 | same |
+| Motion letters {J, Z, MOVE} | 0.864 | GroupKFold over 140 independent gestures |
+| Motion, at the runtime operating point | 92% correct when it fires, 16% abstain | same |
+| False J/Z on held-out negatives | 2 of 55 | same |
 | Gate: `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
@@ -51,7 +51,7 @@ Measured, with the split each number came from:
 any random split. Chasing the in-session number actively hurt: adding absolute hand extent took it
 from 0.956 to 0.983 while *halving* cross-session accuracy, 0.520 to 0.262.
 
-Training data is four sessions — the November archive, a full-alphabet pass months later, and a
+Training data is five sessions — the November archive, a full-alphabet pass months later, and a
 targeted pass over the letters that were still confusable. One session is what limited this; the
 second one is what fixed it.
 
@@ -90,3 +90,8 @@ reasoning about the code.
 - **One signer.** Nothing here says anything about a different person's hands.
 - `thresholds.NEEDS_GESTURE_DATA` lists the constants that are still reasoned rather than
   measured.
+- **Thresholds guessed before the data existed were the single largest source of missed
+  letters.** P_EMIT was 0.70 and dropped about one genuine gesture in three; T_MAX was 1.80 and
+  sat *below* the p95 of the training set's own Z durations, clipping real gestures out of the
+  distribution the classifier was fitted on. Both are now swept against recorded events. Check
+  any constant against the data it is supposed to describe before trusting a live failure.

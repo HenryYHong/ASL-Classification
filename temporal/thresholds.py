@@ -78,8 +78,14 @@ class Thresholds:
     # so 0.50 is pure margin for a hand still settling into the launch pose.
 
     # --- event acceptance ---------------------------------------------------------------
-    T_MIN: float = 0.30             # NEEDS-GESTURE-DATA. J/Z run 0.5-1.5 s; band widened 0.2 s
-    T_MAX: float = 1.80
+    T_MIN: float = 0.30             # J/Z run 0.5-1.5 s; band widened 0.2 s below
+    T_MAX: float = 2.10             # MEASURED. 1.80 was guessed before any gesture existed and
+                                    # then sat BELOW the training data's own Z durations, whose
+                                    # p95 is 1.81 and max 1.83 -- the cap was clipping real Z's
+                                    # out of the distribution the classifier was fitted on, and
+                                    # live Z attempts aborted at 1.81 s and 1.83 s. Trained MOVE
+                                    # events top out at 1.81 s, so a longer window admits no new
+                                    # kind of junk; the length and straightness vetoes still run.
     L_MIN: float = 1.50             # palm units. Archive's held-sign path over any 1.2 s
                                     # window maxes at 1.295, so this excludes every hold.
     L_MAX: float = 20.0             # MEASURED, not assumed. 12.0 was a guess at "a reach across
@@ -93,8 +99,14 @@ class Thresholds:
     STRAIGHT_VETO: float = 0.90     # |net| / path. Transport is ~0.95+; neither J nor Z is straight.
 
     # --- classifier operating point -----------------------------------------------------
-    P_EMIT: float = 0.70            # NEEDS-GESTURE-DATA. Sweep on S1 GroupKFold only.
-    MARGIN: float = 0.25            # winner must beat runner-up by this much
+    P_EMIT: float = 0.55            # MEASURED by sweeping out-of-fold probabilities, split by
+                                    # clip, over 182 real events. 0.70 was the pre-data guess and
+                                    # it silently dropped roughly one genuine gesture in three
+                                    # (J+Z recall 0.69). 0.55 raises recall to 0.76 for two false
+                                    # fires in 55 held-out MOVE events; below 0.55 buys nothing.
+                                    # The signer reports missed letters, not spurious ones, so
+                                    # recall is the side worth paying for here.
+    MARGIN: float = 0.20            # winner must beat runner-up by this much
 
     # --- static branch ------------------------------------------------------------------
     # Latency budget for one static letter is HOLD_SETTLE + VOTE_WINDOW, and every 0.1s here is
