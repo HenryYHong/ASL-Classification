@@ -39,19 +39,19 @@ Measured, with the split each number came from:
 | | result | split |
 | --- | --- | --- |
 | Static letters, in-session | 0.968 | held-out tail of each capture burst |
-| **Static letters, leave-one-session-out** | **0.680** | train one session, test the other |
+| **Static letters, leave-one-session-out** | **0.769** | train on all but one session, test on it |
 | Motion letters {J, Z, MOVE} | 0.889 | GroupKFold over 118 independent gestures |
 | Motion, at the runtime operating point | 96% correct when it fires, 22% abstain | same |
 | False J/Z on held-out negatives | 0 | same |
 | Gate: `J_GATE` on held `I` | 100/100, 0 false of 2,278 | committed archive |
 | Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
 
-**The 0.680 is the honest number.** The in-session figure is inflated the same way the original
+**The 0.769 is the honest number.** The in-session figure is inflated the same way the original
 99.58% was: consecutive frames of one held sign are near-duplicates, so they sit on both sides of
 any random split. Chasing the in-session number actively hurt: adding absolute hand extent took it
 from 0.956 to 0.983 while *halving* cross-session accuracy, 0.520 to 0.262.
 
-Training data is three sessions — the November archive, a full-alphabet pass months later, and a
+Training data is four sessions — the November archive, a full-alphabet pass months later, and a
 targeted pass over the letters that were still confusable. One session is what limited this; the
 second one is what fixed it.
 
@@ -76,8 +76,14 @@ reasoning about the code.
 
 ## What is still weak
 
-- **G, M, S, T** are the letters that change most between sittings (G→H, M→E, S→E, T→N across
-  sessions). More sessions is the only fix; thresholds cannot separate them.
+- **M, N and S** are the weakest across sessions. They are fists distinguished only by where the
+  thumb sits, so a centimetre of thumb drift between sittings is a different letter. G, K and T
+  were in this list until the recordings were made consistent.
+- **Check new recordings against the letter's defining geometry before training on them.** Every
+  G frame in one session had an extended middle finger, which is an H; two thirds of a targeted
+  re-recording did too. The correct frames were outvoted and G read as H everywhere. Dropping
+  them by that rule moved cross-session accuracy 0.680 -> 0.702, and consistent K/M/S/T
+  recordings took it to 0.769.
 - **The static model is over-confident in-session and under-confident live**, which is why a
   letter can be correct on 100 of 100 frames and still score 0.41. Emission therefore accepts
   either a confident winner or a decisive one — see `VOTE_MARGIN_CLEAR` in `thresholds.py`.
