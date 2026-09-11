@@ -163,7 +163,7 @@
 
 <main>
   <h1>ASL fingerspelling</h1>
-  <p class="lede">26 letters, read live &mdash; no words, no grammar. Video stays on your device.</p>
+  <p class="lede">Communicate in Sign Language with 26 letters :)</p>
 
   <div class="frame">
     <video id="cam" playsinline muted autoplay></video>
@@ -185,9 +185,10 @@
   <details>
     <summary>How it works</summary>
     <p class="note">
-      MediaPipe finds 21 hand landmarks; a random forest reads the handshape; a state machine
-      decides when a letter was actually signed. J and Z are motion letters, so they need a
-      launch pose held still, then the stroke.
+      Fingerspelling only &mdash; one letter at a time, no words, no grammar. MediaPipe finds
+      21 hand landmarks; a random forest reads the handshape; a state machine decides when a
+      letter was actually signed. J and Z are motion letters, so they need a launch pose held
+      still, then the stroke. Video stays on your device.
     </p>
     <p class="note">
       Trained on one signer across three sessions: 0.769 on held-out sessions for the static
