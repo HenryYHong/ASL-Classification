@@ -1,6 +1,12 @@
 # Real-time American Sign Language Recognition
 
-Two independent classifiers for the static ASL fingerspelling alphabet, both driven live from a webcam. One learns from raw 28x28 pixels; the other learns from MediaPipe hand landmarks. They sit in one repository on purpose: the first scores 95-99% on its benchmark and still falls apart in front of a camera, and the second is what that failure led to.
+Three attempts at the same problem, kept in the order I built them, because each one exists because of what the last one got wrong.
+
+**A** is a CNN on raw 28x28 pixels: 95-99% on its benchmark, and it collapses onto a handful of classes in front of a webcam. **B** throws the pixels away and classifies MediaPipe's 21 hand landmarks instead: it works live, but only for 24 letters, and its 99.58% is measured on near-duplicate frames from the session it trained on. **C** is what happens when you take that criticism seriously — a motion branch that adds J and Z, a feature that survives a change of day, and a number measured by holding out a whole recording session. It runs in the browser.
+
+### [Try it in your browser →](https://henryyhong.com/ASL-Classification/)
+
+No install, no upload: the model is ~8 MB of JSON, and the camera frames never leave your machine. Chrome or Safari, allow the camera, sign at the box.
 
 <img width="525" alt="ASL" src="https://github.com/user-attachments/assets/7a6fde28-68aa-4d7b-92a0-115bef967a6f" />
 <img width="604" alt="ASL3" src="https://github.com/user-attachments/assets/c56a280c-6667-4226-b86d-fa9c79073faa" />
@@ -9,25 +15,26 @@ Two independent classifiers for the static ASL fingerspelling alphabet, both dri
 
 ## Scope
 
-**24 classes:** A B C D E F G H I K L M N O P Q R S T U V W X Y.
+**Approaches A and B cover 24 letters:** A B C D E F G H I K L M N O P Q R S T U V W X Y. **Approach C covers all 26.**
 
-**J and Z are excluded.** Both are motion signs — J traces a hook, Z traces a zigzag — and neither is expressible in a single still frame. Every model here classifies one frame with no temporal state, so those two letters are outside the label space by construction, not by omission.
+**J and Z are motion signs** — J traces a hook, Z traces a zigzag — and neither is expressible in a single still frame. A single frame of a J *is* an I. Any model that classifies one frame with no temporal state has them outside its label space by construction, which is why A and B stop at 24 and why `temporal/` is a different shape of program rather than a bigger forest.
 
-This is a fingerspelling letter classifier, not a sign language translator: no words, no grammar, no facial markers, no two-handed signs, nothing that needs temporal context.
+All three are fingerspelling letter classifiers, not sign language translators: one letter at a time, no words, no grammar, no facial markers, no two-handed signs.
 
-The two pipelines reach the same 24 letters through different index maps. The CNN inherits Sign-MNIST's `label` column, whose values run 0-24 with 9 (J) never present and 25 (Z) never assigned at all; `LabelBinarizer` collapses that onto 24 output units. The Random Forest uses a contiguous 0-23 map built at capture time: `0:A … 8:I, 9:K, 10:L … 23:Y`.
+The first two pipelines reach the same 24 letters through different index maps. The CNN inherits Sign-MNIST's `label` column, whose values run 0-24 with 9 (J) never present and 25 (Z) never assigned at all; `LabelBinarizer` collapses that onto 24 output units. The Random Forest uses a contiguous 0-23 map built at capture time: `0:A … 8:I, 9:K, 10:L … 23:Y`.
 
-## The two pipelines at a glance
+## The three pipelines at a glance
 
-| | **A — CNN on Sign-MNIST** | **B — MediaPipe landmarks + Random Forest** |
-| --- | --- | --- |
-| Notebook | `CNN/ASL_Detection.ipynb` | `RandomForest/Mediapipe.ipynb` |
-| Input representation | 28x28 grayscale pixels (784 values) | 42 floats: 21 landmarks x (x, y) |
-| Training data | Sign Language MNIST (public), 27,455 rows | 2,377 usable landmark vectors from 2,400 frames I recorded myself |
-| Model | 3-block CNN, 264,049 params | `RandomForestClassifier()`, 100 trees, 9,452 nodes |
-| Training cost | 20 epochs, ~17-20 s each on an Apple M1 Pro | Seconds |
-| Benchmark accuracy | 95.29% saved / 99.69% best epoch | 99.58% random split, 100.00% per-class split (V contributes zero test samples — see caveats) |
-| Works in the live demo | No — collapses onto a few classes | Yes |
+| | **A — CNN on Sign-MNIST** | **B — landmarks + Random Forest** | **C — `temporal/`, two branches** |
+| --- | --- | --- | --- |
+| Code | `CNN/ASL_Detection.ipynb` | `RandomForest/Mediapipe.ipynb` | `temporal/*.py`, ported to `docs/*.js` |
+| Letters | 24 | 24 | **26** |
+| Input representation | 28x28 grayscale pixels (784 values) | 42 floats: 21 landmarks x (x, y) | 101 floats per frame (palm-normalized shape + 55 pairwise distances), and a 79-D arc-length path descriptor for J and Z |
+| Training data | Sign Language MNIST (public), 27,455 rows | 2,377 usable landmark vectors from 2,400 frames I recorded myself | 4,878 frames over four sessions + 140 recorded gestures, all mine |
+| Model | 3-block CNN, 264,049 params | `RandomForestClassifier()`, 100 trees, 9,452 nodes | Two forests (400 and 300 trees), a six-inequality launch gate, a four-state segmenter |
+| Training cost | 20 epochs, ~17-20 s each on an Apple M1 Pro | Seconds | About a minute |
+| Headline accuracy | 95.29% saved / 99.69% best epoch | 99.58% random split, 100.00% per-class split (V contributes zero test samples — see caveats) | **0.759 leave-one-session-out**; 0.864 on {J, Z, MOVE} |
+| Works in the live demo | No — collapses onto a few classes | Yes, for the session it trained on | Yes — in a browser, on someone else's machine |
 
 The two also differ in provenance, not just representation. Approach A trains on Sign Language MNIST, a public benchmark someone else assembled. Approach B trains on a dataset I built end to end: I wrote the capture cell, recorded all 2,400 frames myself on my own webcam, and labeled them by construction — one folder per letter, 100 frames each. Nothing in `RandomForest/data/` was downloaded.
 
@@ -48,11 +55,26 @@ ASL/
 │   ├── smnist.h5                3.2 MB — saved by the training cell, loaded by the live demo
 │   ├── smnist.keras             3.2 MB — same architecture, DIFFERENT weights (see below)
 │   └── asl_model.keras          1.65 MB — leftover from an earlier experiment (see below)
-└── RandomForest/
-    ├── Mediapipe.ipynb          7 cells: install, capture, extract, train x2, live demo
-    ├── data/0 … data/23         24 folders x 100 JPGs = 2,400 frames, each 1920x1080
-    ├── data.pickle              912 KB — {'data': [...42 floats...], 'labels': [...]}
-    └── model.p                  2.4 MB — pickled {'model': RandomForestClassifier}
+├── RandomForest/
+│   ├── Mediapipe.ipynb          7 cells: install, capture, extract, train x2, live demo
+│   ├── data/0 … data/23         24 folders x 100 JPGs = 2,400 frames, each 1920x1080
+│   ├── data.pickle              912 KB — {'data': [...42 floats...], 'labels': [...]}
+│   └── model.p                  2.4 MB — pickled {'model': RandomForestClassifier}
+├── temporal/                    Approach C. See temporal/README.md.
+│   ├── features.py              the one shared transform: both branches, both languages
+│   ├── thresholds.py            every runtime constant, each with the measurement behind it
+│   ├── segmenter.py             four-state machine deciding when a letter was actually signed
+│   ├── collect_motion.py        recorder for both static letters and J/Z gestures
+│   ├── train_static.py          ships model_static.p; characterizes, never selects
+│   ├── train_motion.py          ships model_motion.p; GroupKFold over independent clips
+│   ├── crossval_static.py       leave-one-session-out — the number the README quotes
+│   └── static_s*.npz            the extra sessions, as landmarks rather than JPEGs
+└── docs/                        the hosted demo, served by GitHub Pages
+    ├── index.html, app.js       camera, overlay, live readout
+    ├── features.js, forest.js, segmenter.js   line-for-line ports of the Python
+    ├── export_models.py         flattens the forests to models.json
+    ├── golden.json              Python's answers for 15 real frames; the page checks itself
+    └── make_demo.sh             screen recording -> the GIF at the top of this file
 ```
 
 `CNN/asl_model.keras` is, like `smnist.keras`, **not** produced by any cell in the notebook. It is a different, earlier architecture — Conv 32/64/128 with `padding='valid'`, Dense 256, Dropout 0.5, and a 25-unit softmax rather than 24 — left over from a first attempt. Nothing in the repository loads it. Use `smnist.h5` — the file the training cell writes and the live demo loads. `smnist.keras` shares the architecture but not the weights: it is a separate, earlier training run, saved 35 minutes before `smnist.h5`, and it is the better model of the two — 98.87% on the test CSV against `smnist.h5`'s 95.29%. Nothing loads it, and none of the accuracy figures below describe it.
@@ -234,6 +256,34 @@ So the defensible claim is narrow: the 42-D landmark representation separates th
 
 ---
 
+## Approach C — motion letters, and a number that survives a new day
+
+`temporal/` is the answer to the section above. It covers J and Z, and it measures itself by holding out an entire recording session rather than 20% of one burst. Full write-up in [`temporal/README.md`](temporal/README.md).
+
+| | result | how it was split |
+| --- | --- | --- |
+| Static letters, in-session | 0.968 | held-out tail of each capture burst — inflated, kept here for contrast |
+| **Static letters, leave-one-session-out** | **0.759** | `temporal/crossval_static.py`, pooled over 4,878 held-out frames |
+| — the fold that tests all 24 letters | 0.659 | hold out the 2,378-frame archive, train on the later sessions |
+| Motion letters {J, Z, MOVE} | 0.864 | `GroupKFold(5)` over 140 independent gestures |
+| Motion, at the runtime operating point | 0.915 correct when it fires | same |
+| Launch gate on held `I` | 100/100, 0 false of 2,278 | committed archive |
+| Segmenter over 157 s of held signs | 0 false triggers, 24/24 letters | committed archive |
+
+Read the per-fold spread, not the mean. Two of the four sessions are targeted re-recordings covering six and four letters, and a fold that tests four well-separated letters scores 1.000 — which is the same trick that made Approach B's 100.00% meaningless, and counting it would earn the same criticism.
+
+**One transform, two branches.** Every frame becomes the same 101-D vector: 21 landmarks centered on the palm and divided by palm width, plus all pairwise distances between fingertips, knuckles and wrist. The distance block is there because a forest splits one coordinate at a time, so "how far apart are these two fingertips" — the whole difference between U and V — otherwise costs it a deep chain of splits. Dividing by palm width is the fix for Approach B's largest weakness: the features are now scale-invariant, so distance from the camera stops changing the answer.
+
+**A gate decides when to look, and it is deliberately not a model.** Six inequalities on finger geometry say whether the hand is in J's or Z's launch pose; a track starts only on a *rising edge* — parked in that pose, and then moving — which is why ordinary hand travel almost never creates a scoring opportunity. Six inequalities fail visibly and can be read straight off the live overlay. An out-of-distribution probability fails confidently, which is the failure mode Approach A is made of.
+
+**Ratios, not lengths.** A finger pointing at the camera projects short, so 2-D distances shrink for reasons that have nothing to do with the handshape. Straightness — tip-to-knuckle distance over the sum of the bone lengths — is a ratio, and it survives that.
+
+**What it actually cost.** Every letter I reported as broken during development turned out to be either a disagreement inside my own recordings or a threshold I had guessed before the data existed — never a weakness in the model. Every `G` frame in one session had an extended middle finger, which is an `H`; the correct frames were outvoted and `G` read as `H` everywhere. `T_MAX` sat *below* the p95 of my own recorded Z durations, clipping real gestures out of the distribution the classifier was fitted on. `P_EMIT` was 0.70 and silently dropped about one genuine gesture in three. Logging what the running system actually saw found all of them; reading the code found none.
+
+**It runs in the browser.** `docs/` is a line-for-line port — same feature code, same thresholds, same forests flattened to JSON. The page checks itself against `golden.json` (15 real frames with the answers Python gives) before the camera ever turns on, and says so in the readout, because a silent Python/JavaScript divergence is the one bug that would look exactly like "the model is bad."
+
+---
+
 ## Running it
 
 ### Environment
@@ -251,6 +301,15 @@ The notebooks were run under Anaconda Python 3.11 on macOS (Apple M1 Pro). Versi
 | `tensorflow` / `keras` | Keras 3.x |
 
 There is no `requirements.txt` and nothing is pinned. Each notebook opens with a `%pip install` cell, but note that the CNN's install cell covers only `opencv-python` and `mediapipe` while its training cell imports `tensorflow`, `pandas` and `scikit-learn` — those must already be present. Two version notes: `model.p` was pickled under scikit-learn 1.3.0 and raises `InconsistentVersionWarning` when unpickled under 1.3.2 (it still loads and predicts), and `model.save('smnist.h5')` warns that HDF5 is a legacy format. `smnist.keras` holds a different, earlier training run of the same architecture in the native format (98.87% on the test CSV); the live demo loads `smnist.h5`.
+
+### Approach C — all 26 letters
+
+```
+python3.11 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python temporal/live_demo.py --camera 0
+```
+
+Python 3.11 and `mediapipe==0.10.18` specifically: MediaPipe 1.0 removed the `mp.solutions` namespace, which breaks this code and both notebooks. `temporal/README.md` has the recording and retraining order. Nothing needs installing to use the [hosted version](https://henryyhong.com/ASL-Classification/).
 
 ### Approach A — CNN
 
@@ -304,11 +363,15 @@ In rough order of how much they matter:
 - **No pinned dependencies.** A `requirements.txt` at the versions above would make the notebooks reproducible rather than approximately reproducible.
 - **Large artifacts are committed:** `sign_mnist_train.csv` at 83.3 MB, `sign_mnist_test.csv` at 21.8 MB, and 2,400 full-resolution JPEGs. The captured frames have to live somewhere, but Sign-MNIST is a public dataset and could be fetched on demand instead of vendored.
 
-Three things I would build rather than fix:
+Approach C fixes the first three of those — scale-normalized features, a second, third and fourth capture session, and a V recorded properly — and leaves the notebooks themselves untouched, since their failures are the point of keeping them.
+
+Three things I would build rather than fix — written before `temporal/` existed, and all three are now in it:
 
 - **An unknown / no-hand rejection path**, so a model can decline to answer instead of asserting a letter at 99% confidence. Approach A's failure mode is precisely the absence of one.
 - **A small MLP on the same 42-D features**, to find out whether the representation or the classifier is the binding constraint. Nothing in this repository currently distinguishes the two.
 - **A temporal buffer over the last N frames** — majority voting would stop single-frame flicker reaching the display, and classifying a *sequence* of 42-D vectors is the only route to J and Z, which the single-frame setting cannot reach at all.
+
+They became, respectively: the emission rule that abstains unless a vote is either confident or decisive; the 101-D feature, whose distance block is exactly the test of whether the representation or the classifier was binding; and the vote window plus the motion branch. What none of them fixed is the one limitation that outlived every rewrite — **it is still one signer.** Nothing here says anything about a different person's hands, and everyone who opens the hosted demo is a different person.
 
 ---
 
@@ -316,4 +379,4 @@ Three things I would build rather than fix:
 
 Approach A trains on **Sign Language MNIST**, a public dataset. Hand detection and 21-keypoint extraction in both approaches use **Google's MediaPipe Hands**.
 
-Everything else here is my own work: the 2,400-frame dataset in `RandomForest/data/` — captured, labeled and curated by me — the capture, training and inference code in both notebooks, and the demo screenshots above.
+Everything else here is my own work: the 2,400-frame dataset in `RandomForest/data/` — captured, labeled and curated by me — the four further capture sessions and 140 recorded J/Z gestures behind `temporal/`, the capture, training and inference code in all three approaches, the browser port, and the screenshots above.
