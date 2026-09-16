@@ -38,6 +38,7 @@ export const SHAPE_DIM = 42;
 export const EVENT_DIM = 79;
 export const K_RESAMPLE = 16;
 export const STATIC_DIM = 101;
+export const STATIC_DIM_V4 = 112;
 
 //: Landmarks whose pairwise distances carry the handshape distinctions trees struggle to
 //: express from raw coordinates: the five fingertips, the five MCP knuckles (2 is the thumb's)
@@ -237,14 +238,98 @@ export function pairDistances(P) {
   return out;
 }
 
-/** What the 24-class static classifier consumes: palm-normalized shape + distances (101-D).
+/** static/v3: palm-normalized shape + distances (101-D). The base of static/v4 below, which is
+ * what both shipped forests consume; registered on its own for pickles that predate the tag.
  *
  * Deliberately NOT including absolute extent (the Python's legacy42). Adding it raises the
- * in-session benchmark 0.968 -> 0.983 and HALVES cross-session accuracy 0.520 -> 0.320, because
- * extent encodes how this signer happened to be sitting.
+ * in-session benchmark (0.968 -> 0.983) and roughly HALVES cross-session accuracy (0.520 ->
+ * 0.262 in the train-on-archive / test-on-S2 measurement of the commit that removed it; that
+ * protocol was not committed and no script reproduces either endpoint, so the figures are the
+ * record, not a re-derivable number), because extent encodes how this signer happened to be
+ * sitting and the within-session split rewards memorizing that.
  */
 export function staticFeature(P) {
   return shape42(P).concat(pairDistances(P));
+}
+
+//: CMC, MCP, IP, TIP of the thumb -- the chain thumbStraightness measures along. Kept apart
+//: from FINGER_CHAIN because the thumb has one joint fewer and no PIP/DIP, and because
+//: pairDistances deliberately iterates the four fingers only (static/v3 must not change).
+export const THUMB_CHAIN = [1, 2, 3, 4];
+
+//: The five points the thumb tip is measured against in staticFeatureV4, in this order:
+//: index PIP, index DIP, middle PIP, middle DIP, thumb IP.
+export const THUMB_TARGETS = [6, 7, 10, 11, 3];
+
+/** |tip - CMC| / (sum of the three thumb bones), 1.0 for a straight thumb. */
+export function thumbStraightness(P) {
+  const [a, b, c, d] = THUMB_CHAIN;
+  const tip = dist(P[d], P[a]);
+  const seg = dist(P[b], P[a]) + dist(P[c], P[b]) + dist(P[d], P[c]);
+  return tip / Math.max(seg, 1e-9);
+}
+
+/** Distance of each fingertip (thumb, index, middle, ring, pinky) from the palm center, in
+ * palm units. 5 values. */
+export function tipPalmDistances(P) {
+  const S = palmScale(P);
+  const m = palmCentre(P);
+  return [4, 8, 12, 16, 20].map((i) => dist(P[i], m) / S);
+}
+
+/** static/v4: the 101-D static/v3 vector followed by an 11-value thumb block. 112-D.
+ *
+ * The block, in this order and nothing else (temporal/features.py static_feature_v4):
+ *     [101]      thumbStraightness          |P4-P1| / (|P2-P1| + |P3-P2| + |P4-P3|)
+ *     [102:107]  tipPalmDistances           fingertips 4, 8, 12, 16, 20 to the palm center,
+ *                                           divided by palmScale
+ *     [107:112]  thumb tip (4) to landmarks 6, 7, 10, 11, 3, divided by palmScale
+ * All of it on the canonical isotropic x,y; z is never read.
+ *
+ * Why it exists: the letters the 101-D vector confuses are separated by where the THUMB sits.
+ * The fists (A, E, M, N, S, T) differ only in whether the thumb lies beside the index, across
+ * the fingers, or between them; D and X differ in whether the thumb touches the middle finger.
+ * pairDistances carries thumb-to-fingertip distances, but the fists keep every fingertip curled
+ * at almost the same place, so what separates them is the thumb against the KNUCKLES -- the PIP
+ * and DIP of the index and middle finger -- and how straight the thumb is. Measured
+ * leave-one-session-out with the same jitter augmentation (sigma 0.12, x4) and the same X-rule
+ * training filter, the block adds about +0.02 on the cross-day fold and +0.01 pooled: within one
+ * realistic seed spread, kept for the geometry it encodes and the consistent direction of the
+ * effect, not as a large win.
+ *
+ * Both shipped forests -- the 24-letter forest and the 10-digit forest (train_digits.py
+ * measured it 0.986 leave-signer-out on either tag and 0.162 against 0.267 idle false-digit on
+ * this one) -- and every golden.json case are on this tag; static/v3 stays registered for
+ * exports written before the tag existed. The Python builds the block in exactly this order,
+ * so a reordering here is a silent break of the port -- STATIC_FEATURES is what both sides key
+ * on, and test_features.mjs compares the whole 112-D vector against the golden cases.
+ */
+export function staticFeatureV4(P) {
+  const S = palmScale(P);
+  const extra = THUMB_TARGETS.map((j) => dist(P[4], P[j]) / S);
+  return staticFeature(P).concat([thumbStraightness(P)], tipPalmDistances(P), extra);
+}
+
+//: The static feature a model was trained on, by the 'feature' tag models.json carries for it.
+//: Every consumer that feeds a static forest (the segmenter, the self-check, the tests)
+//: resolves the function through this table rather than hard-coding one, so a forest can never
+//: be fed a vector of the wrong layout without an error naming the tag. Values are
+//: [function, dim], the Python's (function, dim) tuples.
+export const STATIC_FEATURES = {
+  'static/v3': [staticFeature, STATIC_DIM],
+  'static/v4': [staticFeatureV4, STATIC_DIM_V4],
+};
+export const DEFAULT_STATIC_TAG = 'static/v3';
+
+/** [function, dim] for a static model's feature tag; null means the original static/v3 (models
+ * exported before the tag existed). Throws on a tag the registry does not know. */
+export function staticFeatureFor(tag) {
+  const key = (tag === null || tag === undefined) ? DEFAULT_STATIC_TAG : String(tag);
+  if (!Object.prototype.hasOwnProperty.call(STATIC_FEATURES, key)) {
+    throw new Error(`unknown static feature tag ${JSON.stringify(key)}; known: `
+      + `${Object.keys(STATIC_FEATURES).sort().join(', ')}`);
+  }
+  return STATIC_FEATURES[key];
 }
 
 /** Fingertip distance from the wrist, in palm units. */
@@ -283,17 +368,24 @@ export function thumbPinkyMcp(P) {
   return dist(P[4], P[17]) / palmScale(P);
 }
 
+//: Thumb-tip-to-pinky-MCP ceiling of the J gate, palm units. MEASURED on the five prompted
+//: takes (113 J/Z items) and the archive: at 1.20 the gate never armed on 13 of the 60 J items
+//: (41 credited), at 1.30 it arms on 48 of them, and the count of rest-phase spans the runtime
+//: could score is identical at both (J 10, Z 8). The price is 13 of 2,278 non-I archive frames
+//: passing instead of 1 -- all of them Y (13 of Y's 100), which replayed through the whole
+//: segmenter start no track. 1.35 buys 2 more items for 1 more Y frame; 1.25 only 3 items.
+export const J_THUMB_MAX = 1.30;
+
 /** Is this frame in a J launch pose (the 'I' handshape: pinky out, others curled)? */
 export function jGate(P) {
   const e = extensionRatios(P);
   const others = Math.max(e.index, e.mid, e.ring);
-  // 1.20, not the 1.15 the archive alone suggested. On a real 30-gesture take the signer's
-  // thumb drifted from 1.10 early to 1.18 late as the hand tired, and the tighter threshold
-  // silently dropped the gate from 70% to 27% -- half the recording lost, with no error
-  // anywhere. At 1.20 the archive keeps I recall at 100% and admits one frame of Y in 100,
-  // which cannot itself produce a false J: arming is only the first of the rising edge, the
-  // vetoes and the classifier.
-  return (e.pinky > 1.50) && (others < 1.30) && (thumbPinkyMcp(P) < 1.20);
+  // The thumb ceiling is J_THUMB_MAX (see above). 1.15 came from the archive alone; 1.20 was
+  // set when a 30-gesture take showed the signer's thumb drifting from 1.10 to 1.18 as the
+  // hand tired; the prompted takes then showed 1.20 still losing 13 of 60 J items at the
+  // gate. A frame passing the gate cannot by itself produce a false J: arming is only the
+  // first of the rising edge, the vetoes and the classifier.
+  return (e.pinky > 1.50) && (others < 1.30) && (thumbPinkyMcp(P) < J_THUMB_MAX);
 }
 
 /** Is this frame in a Z launch pose (index extended, others curled)?
@@ -323,7 +415,7 @@ export function handOrientation(P) {
  * shapes: array of 42-vectors from shape42. times: seconds. Returns one value per frame, in
  * palm units.
  *
- * This is the signal that separates "hand travelling, shape fixed" (a real J: rigid finger,
+ * This is the signal that separates "hand traveling, shape fixed" (a real J: rigid finger,
  * the arm moves it) from "shape changing" (an inter-letter transition). Speed alone cannot make
  * that distinction and the rigidity veto rests entirely on it.
  *
@@ -358,7 +450,7 @@ export function rollingShapeSigma(shapes, times, windowS = 0.4) {
  * pulling in a linear-algebra library for a 2x2 would be absurd, so derive it instead.
  *
  *   Let c_k be the current shape's landmarks and r_k the reference's; both are already centered
- *   (shape42 subtracts the palm centre) and palm-scaled, so only a rotation is left to fit.
+ *   (shape42 subtracts the palm center) and palm-scaled, so only a rotation is left to fit.
  *   Minimizing sum_k |R c_k - r_k|^2 over rotations R means maximizing sum_k r_k . (R c_k),
  *   which is sum_k tr(R c_k r_k^T) = tr(R H) with H = sum_k c_k r_k^T = cur^T @ ref -- the same
  *   cross-covariance the Python builds.
@@ -419,7 +511,42 @@ export function movingAverageTime(values, times, windowS) {
   return out;
 }
 
-/** Palm-centre speed in palm-widths per second, smoothed over `windowS` SECONDS.
+/** Indices of the frames the segmenter averages vBar over at time tEnd: every frame with
+ * t >= tEnd - windowS (tEnd's own frame included), or the last two frames when fewer than two
+ * qualify (a frame gap longer than the window). `times` must be ascending and end at or after
+ * tEnd; only frames at or before tEnd are considered. Returns [j, n): j inclusive, n exclusive.
+ */
+export function trailingWindow(times, tEnd, windowS) {
+  // n = searchsorted(times, tEnd, side='right'): one past the last frame at or before tEnd.
+  let lo = 0, hi = times.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= tEnd) lo = mid + 1; else hi = mid;
+  }
+  const n = lo;
+  let j = searchsortedLeft(times.slice(0, n), tEnd - windowS);
+  if (n - j < 2) j = Math.max(0, n - 2);
+  return [j, n];
+}
+
+/** Mean per-step palm-center speed over one window of >= 2 frames, palm-widths per second.
+ *
+ * Each step is |m[k] - m[k-1]| / (S[k] * dt), scaled by the LATER frame's palm size, and the
+ * mean is over the steps between consecutive frames of the window -- the step that enters the
+ * window from before it is not counted. This is the segmenter's vBar; every stillness and
+ * motion threshold in thresholds.py is a percentile of it.
+ */
+export function windowSpeed(times, centres, scales) {
+  let sum = 0.0;
+  for (let i = 1; i < times.length; i++) {
+    const dt = Math.max(times[i] - times[i - 1], 1e-6);
+    sum += dist(centres[i], centres[i - 1]) / (scales[i] * dt);
+  }
+  return sum / (times.length - 1);
+}
+
+/** vBar for every frame of a sequence, EXACTLY as Segmenter._updateSignals computes it:
+ * trailingWindow + windowSpeed per frame. The first frame has no step and reads 0.0.
  *
  * The window is in seconds, not samples, because a sample count is a different amount of
  * smoothing at every frame rate. A 5-sample average is 0.33 s at 15 fps and 0.17 s at 30 fps;
@@ -427,17 +554,21 @@ export function movingAverageTime(values, times, windowS) {
  * the rising-edge trigger never fires and no gesture is ever detected. That silently breaks the
  * detector on any camera faster than the one the thresholds were calibrated on -- and a browser
  * runs at whatever frame rate the machine happens to give, which is exactly the hazard.
+ *
+ * This used to be movingAverageTime over per-step speeds with a leading 0.0 placeholder, which
+ * averages k+1 values (the step entering the window included) where the segmenter averages k.
+ * Over the archive the two differed on 2,352 of 2,354 frames (max 0.69 palm/s), so the Python's
+ * calibrate.py was measuring a signal the thresholds are never applied to. There is now one
+ * arithmetic on both sides, and the segmenter calls the same two functions.
  */
 export function palmSpeed(centres, scales, times, windowS = 0.33) {
   const n = centres.length;
-  if (n < 2) return new Array(n).fill(0.0);
-  const v = new Array(n);
-  v[0] = 0.0;
+  const out = new Array(n).fill(0.0);
   for (let i = 1; i < n; i++) {
-    const dt = Math.max(times[i] - times[i - 1], 1e-6);
-    v[i] = dist(centres[i], centres[i - 1]) / (scales[i] * dt);
+    const [j, k] = trailingWindow(times, times[i], windowS);
+    out[i] = windowSpeed(times.slice(j, k), centres.slice(j, k), scales.slice(j, k));
   }
-  return movingAverageTime(v, times, windowS);
+  return out;
 }
 
 /** Resample a 2-D path to k points equally spaced by ARC LENGTH, not by time.
@@ -510,7 +641,7 @@ export function eventFeatures(times, Pseq, arm, handedness = null) {  // eslint-
   const net_mag = Math.hypot(net[0], net[1]);
   const straightness = L > 1e-9 ? net_mag / L : 0.0;
 
-  // [0:32] path shape: resample by arc length, centre on its own centroid, scale by S_evt.
+  // [0:32] path shape: resample by arc length, center on its own centroid, scale by S_evt.
   // Centring across TIME is the same trick shape42 applies across LANDMARKS: a J traced
   // top-left and the same J traced bottom-right give identical numbers. Absolute frame
   // position never enters any model.
@@ -531,8 +662,10 @@ export function eventFeatures(times, Pseq, arm, handedness = null) {  // eslint-
   const ori = Pseq.map(handOrientation);
   const orient = [median(ori.map((o) => o[0])), median(ori.map((o) => o[1]))];
 
-  // Same trailing-window definition the segmenter's rigidity veto uses, so [59]/[60] are
-  // directly comparable to RIGID_VETO rather than being a differently-scaled quantity.
+  // The PLAIN trailing-window sigma (rollingShapeSigma), the segmenter's stability signal --
+  // comparable to SHAPE_STABLE. The runtime's rigidity veto reads the rotation-ALIGNED
+  // sigmaRigid instead (rollingShapeSigmaAligned), so [59]/[60] are not the quantity
+  // RIGID_VETO is applied to; they describe how much the handshape changed, rotation included.
   const shapes = Pseq.map(shape42);
   const sig = rollingShapeSigma(shapes, times);
 
@@ -555,7 +688,7 @@ export function eventFeatures(times, Pseq, arm, handedness = null) {  // eslint-
   const s_last = median(S_t.slice(S_t.length - third));
   const scale_ratio = s_first > 1e-9 ? (s_last / s_first - 1.0) : 0.0;
 
-  // [70:78] articulation: the tip measured RELATIVE to the palm centre. In a genuine J or Z the
+  // [70:78] articulation: the tip measured RELATIVE to the palm center. In a genuine J or Z the
   // finger is rigid and the arm carries it, so these are near zero. A wave or a finger wiggle
   // moves the tip relative to the palm and lights this block up.
   const rel = Pseq.map((P, i) => {

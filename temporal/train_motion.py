@@ -4,17 +4,19 @@ The label space is three classes, not four: an event only exists downstream of a
 trigger, so a still hand never produces one and a STATIC class would be unreachable at
 runtime while inflating every accuracy printed here.
 
-The split is BY CLIP and nothing else. Each recorded take is one independent observation;
-the augmented copies of a take are correlated with it and with each other, so a row-level
-split would put a time-warped copy of a test gesture into training and report a number that
-means "can the forest re-identify this take" rather than "does it recognize a J". That is
-the exact mistake the README documents this project already making once, and the structural
-defense -- not the disciplinary one -- is that the array handed to the splitter has one row
-per clip, and feature rows are materialised only afterwards, inside each side. Augmentation
-runs on the training side only, and both facts are asserted at runtime rather than tested.
+The split is BY GROUP and nothing else. A group is one prompted item of a take (or one
+recorded clip): every span the segmenter cuts from that item -- the credited gesture, its
+false starts, the settle -- and every augmented copy of them shares the group id, so a
+group-level split cannot put a fragment or a time-warped copy of a test gesture into training
+and report a number that means "can the forest re-identify this take" rather than "does it
+recognize a J". That is the exact mistake the README documents this project already making
+once, and the structural defense -- not the disciplinary one -- is that the array handed to
+the splitter carries one group id per event, feature rows are materialized only afterwards,
+inside each side, and augmentation runs on the training side only; both facts are asserted at
+runtime rather than tested.
 
-Every accuracy is printed beside n_independent_clips, because an accuracy over augmented
-rows describes a row count that is not an evidence count.
+Every accuracy is printed beside GROUPS, the number of independent prompted items behind it,
+because a count of events (several per item) or of augmented rows is not an evidence count.
 
 Cross-validation is confined to one recording session, because a number pooled across two
 sittings is neither a within-session number nor a generalization one. The headline is
@@ -136,10 +138,12 @@ def interpolate_gaps(lm, times, max_gap):
     """Drop the NaN frames the recorder writes for undetected hands, or reject the clip.
 
     The recorder keeps a NaN row for every frame MediaPipe lost so the clip's time base stays
-    honest. A gap shorter than the segmenter's own GAP_INTERP is interpolated here exactly as
-    the segmenter interpolates it at runtime; a longer one aborts the track at runtime, so a
-    clip containing one is not a clip the runtime could ever have scored and it is dropped
-    rather than repaired. Returns (times, P) or None.
+    honest. A gap longer than the segmenter's GAP_INTERP aborts the track at runtime, so a clip
+    containing one is not a clip the runtime could ever have scored and it is dropped rather
+    than repaired. A shorter gap is interpolated HERE, which the runtime does not do (the
+    segmenter leaves the missing frames absent and features the frames it has); this is the
+    --whole-clips diagnostic path, not the one the shipped forest is trained on.
+    Returns (times, P) or None.
     """
     lm = np.asarray(lm, dtype=np.float64)[:, :, :2]
     times = np.asarray(times, dtype=np.float64)
@@ -180,13 +184,13 @@ def choose_arm(P, label):
     return "J" if j > z else "Z"
 
 
-def load_clips_cut(path, aspect, handedness, th):
+def load_clips_cut(path, aspect, handedness, th, other="drop_unreachable", return_meta=False):
     """Load clips, but cut each one into events by replaying the segmenter over it.
 
     This is the default, and whole-clip loading is the fallback, because the boundaries a
     recording has and the boundaries the runtime produces are not the same thing. A recorded
     clip is 2.0 s of lead-in plus gesture plus settle; Segmenter cuts from motion onset to
-    motion offset and rejects anything past T_MAX = 1.80 s. Training on whole clips therefore
+    motion offset and rejects anything past T_MAX (2.10 s). Training on whole clips therefore
     builds a classifier whose every example is longer than anything it will ever be asked to
     score -- it would cross-validate beautifully and recognize nothing live.
 
@@ -215,7 +219,7 @@ def load_clips_cut(path, aspect, handedness, th):
         sizes = ([(int(a), int(b)) for a, b in arr] if len(arr) == len(raw_clips)
                  else [(int(arr[0][0]), int(arr[0][1]))] * len(raw_clips))
 
-    out, stats = [], {}
+    out, stats, meta = [], {}, []
     for i in range(len(raw_clips)):
         lab = str(raw_labels[i]).strip().upper()
         handed_i = raw_handed[i] if raw_handed is not None else handedness
@@ -230,21 +234,19 @@ def load_clips_cut(path, aspect, handedness, th):
             items = json.loads(str(raw_prompts[i])) if raw_prompts is not None else []
             spans = LE.harvest(np.asarray(raw_clips[i]), np.asarray(raw_stamps[i]),
                                handed_i, th, sizes[i][0], sizes[i][1])
-            got = Counter()
-            for s in spans:
-                t0 = float(s["times"][0])
-                it = next((I for I in items if I["park"][0] <= t0 < I["rest"][1]), None)
-                if it is None:
-                    use, gid = "MOVE", 999
-                elif t0 >= it["rest"][0] or it["label"] == "NONE":
-                    use, gid = "MOVE", it["index"]
-                else:
-                    use, gid = it["label"], it["index"]
-                    got[it["index"]] += 1
-                if use in ("J", "Z") and s["arm"] != use:
-                    use = "MOVE"
-                out.append(Clip(clip_id=i * 1000 + gid, times=s["times"], P=s["P"],
-                                label=use, arm=s["arm"], session=sess_i))
+            # ONE credited gesture per prompted item (label_events.assign_continuous): the
+            # longest reachable span in the item's window is the letter; the rest are MOVE
+            # or dropped per `other`. Group id = item, so GroupKFold partitions by gesture.
+            rows = LE.assign_continuous(spans, items, th, other=other)
+            got = Counter(r["gid"] for r in rows if r["credited"])
+            for r in rows:
+                s = r["span"]
+                out.append(Clip(clip_id=LE.group_id(i, r["gid"]), times=s["times"], P=s["P"],
+                                label=r["label"], arm=s["arm"], session=sess_i))
+                meta.append({"take": i, "gid": r["gid"], "phase": r["phase"],
+                             "reachable": bool(r["reachable"]), "credited": bool(r["credited"]),
+                             "reason": str(s.get("reason", "")), "L": float(r["L"]),
+                             "dur": float(r["dur"])})
             for I in items:
                 if I["label"] in ("J", "Z"):
                     stats.setdefault(I["label"], Counter())[got.get(I["index"], 0)] += 1
@@ -255,26 +257,40 @@ def load_clips_cut(path, aspect, handedness, th):
             continue
         spans = LE.harvest(np.asarray(raw_clips[i]), np.asarray(raw_stamps[i]),
                            handed_i, th, sizes[i][0], sizes[i][1])
-        stats.setdefault(lab, Counter())[len(spans)] += 1
-        for s in spans:
-            # An event armed under the other gate is a negative: at runtime this same span
-            # would be scored under that arm, so the classifier must have seen it there.
-            use = cls if (cls == "MOVE" or s["arm"] == cls) else "MOVE"
-            out.append(Clip(clip_id=i, times=s["times"], P=s["P"], label=use, arm=s["arm"],
-                            session=sess_i))
+        # A recorded clip is one prompted item spanning the whole clip (LE.clip_as_item), so
+        # the CONTINUOUS rule applies unchanged: ONE credited reachable gesture under the
+        # matching gate, a span armed under the other gate is MOVE (at runtime it would be
+        # scored under that arm, so the classifier must have seen it there), aborted and
+        # veto-failing spans go by `other`. Same id namespace as the takes (LE.group_id), so a
+        # file that mixes the two recording modes cannot hand GroupKFold colliding groups.
+        rows = LE.assign_continuous(spans, LE.clip_as_item(lab, raw_stamps[i]), th, other=other)
+        stats.setdefault(lab, Counter())[
+            sum(r["credited"] for r in rows) if cls in ("J", "Z") else len(rows)] += 1
+        for r in rows:
+            s = r["span"]
+            out.append(Clip(clip_id=LE.group_id(i), times=s["times"], P=s["P"], label=r["label"],
+                            arm=s["arm"], session=sess_i))
+            meta.append({"take": i, "gid": i, "phase": "clip", "reachable": bool(r["reachable"]),
+                         "credited": bool(r["credited"]), "reason": str(s.get("reason", "")),
+                         "L": float(r["L"]), "dur": float(r["dur"])})
 
-    print("events cut by replaying the segmenter (counts are events-per-clip):")
+    print("events cut by replaying the segmenter (J/Z: credited gestures per prompted item or "
+          "recorded clip; NONE: MOVE spans kept per clip):")
     for lab in sorted(stats):
         note = ""
         if lab in ("J", "Z"):
             missed = stats[lab].get(0, 0)
             if missed:
-                note = f"   {missed} clip(s) produced NO event -- the runtime would miss those too"
+                note = f"   {missed} item(s) produced NO reachable event -- the runtime would miss those too"
         print(f"  {lab:5s} {dict(sorted(stats[lab].items()))}{note}")
-    return out
+    print(f"non-credited span policy: other={other!r}; GROUPS={len({c.clip_id for c in out})} "
+          f"independent prompted items over {len(out)} events")
+    return (out, meta) if return_meta else out
 
 
 def load_clips(path, aspect, handedness):
+    import label_events as LE
+
     d = np.load(path, allow_pickle=True)
     raw_clips = _pick(d, ("clips",))
     raw_stamps = _pick(d, ("stamps", "times"))
@@ -332,7 +348,7 @@ def load_clips(path, aspect, handedness):
         P = F.to_isotropic(lm, w, h)
         P = F.canonicalize_handedness(
             P, modal_handedness(hands[i] if hands is not None else None, handedness))
-        clips.append(Clip(i, times, P, label, choose_arm(P, label),
+        clips.append(Clip(LE.group_id(i), times, P, label, choose_arm(P, label),
                           _norm_session(sessions[i]) if sessions is not None else None))
     if dropped_gap:
         print(f"dropped {dropped_gap} clip(s): a tracking gap longer than GAP_INTERP="
@@ -427,9 +443,12 @@ def models():
 def cross_validate(clips, n_splits, n_aug):
     """GroupKFold over clip ids, with rows built inside each fold. Returns pooled predictions."""
     ids = np.array([c.clip_id for c in clips])
-    k = min(n_splits, len(clips))
+    # GroupKFold needs at most as many splits as there are DISTINCT groups. Several events
+    # share a group (every span of one prompted item; every rest-phase span of a take), so a
+    # small recording with more events than groups used to raise instead of reducing k.
+    k = min(n_splits, len(set(ids.tolist())))
     if k < 2:
-        print("fewer than 2 clips: no cross-validation is possible")
+        print("fewer than 2 independent groups: no cross-validation is possible")
         return None
 
     folds = {name: [] for name in models()}
@@ -472,18 +491,19 @@ def cross_validate(clips, n_splits, n_aug):
         accs = [a for a, _ in res]
         detail = " ".join(f"{a:.3f}" for a in accs)
         print(f"{name:>20}  {np.mean(accs):>9.3f}  {detail}")
-    print(f"n_independent_clips = {len(clips)} (test clips per fold: "
-          f"{[n for _, n in folds['RandomForest']]}); every accuracy above is over "
-          f"un-augmented held-out clips only")
+    n_groups = len(set(ids.tolist()))
+    print(f"GROUPS = {n_groups} independent prompted items over {len(clips)} events (test "
+          f"events per fold: {[n for _, n in folds['RandomForest']]}); every accuracy above is "
+          f"over un-augmented held-out events only")
     return {"y": np.concatenate(pooled["y"]), "p": np.concatenate(pooled["p"]),
-            "classes": pooled["classes"], "n_clips": len(clips)}
+            "classes": pooled["classes"], "n_clips": n_groups}
 
 
 def report_pooled(pooled):
     y, p, classes = pooled["y"], pooled["p"], pooled["classes"]
     pred = np.array(classes)[p.argmax(axis=1)]
 
-    print(f"\n=== pooled out-of-fold predictions, n_independent_clips = {pooled['n_clips']} ===")
+    print(f"\n=== pooled out-of-fold predictions, GROUPS = {pooled['n_clips']} ===")
     print("confusion (rows true, cols predicted):")
     print(f"{'':>8}" + "".join(f"{c:>8}" for c in classes))
     for c in classes:
@@ -501,17 +521,20 @@ def report_pooled(pooled):
     # met. An accuracy measured on the argmax therefore describes a decision rule the runtime
     # never uses, so the operating point the runtime does use is reported beside it.
     order = np.sort(p, axis=1)
-    fires = (order[:, -1] >= DEFAULT.P_EMIT) & (order[:, -1] - order[:, -2] >= DEFAULT.MARGIN)
+    # The runtime emits only when the argmax is J or Z AND it clears P_EMIT and MARGIN.
+    fires = (np.isin(pred, ["J", "Z"]) & (order[:, -1] >= DEFAULT.P_EMIT)
+             & (order[:, -1] - order[:, -2] >= DEFAULT.MARGIN))
+    jz = np.isin(y, ["J", "Z"])
     print(f"\nat the runtime operating point P_EMIT={DEFAULT.P_EMIT} MARGIN={DEFAULT.MARGIN}:")
     print(f"  abstention rate {1 - fires.mean():.3f} over {len(y)} held-out events")
-    if fires.any():
-        print(f"  accuracy when it does fire {float((pred[fires] == y[fires]).mean()):.3f}"
-              f"  (n_independent_clips = {pooled['n_clips']})")
+    if jz.any():
+        print(f"  J+Z recall (emitted as the right letter) {float((fires & (pred == y) & jz).sum() / jz.sum()):.3f}"
+              f" over {int(jz.sum())} letter events  (GROUPS = {pooled['n_clips']})")
     for c in classes:
         if c == "MOVE":
             continue
         false_fire = int(((pred == c) & fires & (y == "MOVE")).sum())
-        print(f"  MOVE events emitted as {c}: {false_fire}")
+        print(f"  MOVE events emitted as {c}: {false_fire} of {int((y == 'MOVE').sum())}")
 
 
 def report_importances(X, y, top=15):
@@ -601,6 +624,13 @@ def main():
                          "runtime can never produce an example shaped like them.")
     ap.add_argument("--aug", type=int, default=4,
                     help="augmented copies per training clip; 0 disables augmentation")
+    ap.add_argument("--other", default="drop_unreachable", choices=("move", "drop", "drop_unreachable"),
+                    help="what becomes of a prompted item's or a recorded clip's non-credited "
+                         "spans (label_events.OTHER_POLICIES)")
+    ap.add_argument("--fit-sessions", nargs="+", default=None, metavar="S",
+                    help="fit the written model on these sessions only (default: every "
+                         "session in the recording). The pickle records which, so evaluate.py "
+                         "can label a session held-out or in-sample instead of guessing.")
     args = ap.parse_args()
 
     if not os.path.exists(args.data):
@@ -619,13 +649,14 @@ def main():
         th = Thresholds.from_json(args.thresholds) if args.thresholds else DEFAULT
         if args.thresholds:
             print(f"cutting events with thresholds from {args.thresholds}")
-        clips = load_clips_cut(args.data, aspect, args.handedness, th)
+        clips = load_clips_cut(args.data, aspect, args.handedness, th, other=args.other)
     if not clips:
         print(f"{args.data} contains no usable clip")
         return
 
     counts = {c: sum(k.label == c for k in clips) for c in sorted({k.label for k in clips})}
-    print(f"\n{len(clips)} independent clips {counts}")
+    print(f"\n{len(clips)} events in GROUPS={len({k.clip_id for k in clips})} independent "
+          f"prompted items {counts}")
     arms = {c: sum(k.label == c and k.arm == "J" for k in clips) for c in counts}
     print(f"J-armed clips per class: {arms}  (the rest are Z-armed)")
     by_session = {s: sum(k.session == s for k in clips)
@@ -656,23 +687,38 @@ def main():
     if pooled is not None:
         report_pooled(pooled)
 
-    # The shipped model is fitted on every clip. The cross-validation above exists to
-    # characterise the representation, not to select this model, and its accuracy is not a
-    # property of the pickle written here.
-    rows = rows_from(clips, n_aug=args.aug)
+    # The shipped model is fitted on every clip (or on --fit-sessions). The cross-validation
+    # above exists to characterize the representation, not to select this model, and its
+    # accuracy is not a property of the pickle written here.
+    fit = clips
+    if args.fit_sessions:
+        want = {_norm_session(x) for x in args.fit_sessions}
+        fit = [k for k in clips if k.session in want]
+        if not fit:
+            raise SystemExit(f"--fit-sessions {sorted(want)} matches no event; sessions present: "
+                             f"{sorted(by_session)}")
+        print(f"\nfitting the written model on sessions {sorted(want)} only: {len(fit)} of "
+              f"{len(clips)} events")
+    rows = rows_from(fit, n_aug=args.aug)
     X, y = matrix(rows)
     report_importances(X, y)
 
     model = RandomForestClassifier(n_estimators=300, class_weight="balanced",
                                    min_samples_leaf=2, random_state=0).fit(X, y)
+    groups = len({k.clip_id for k in fit})
+    train_sessions = sorted({k.session for k in fit if k.session})
     with open(args.out, "wb") as fh:
+        # train_sessions / train_groups are what evaluate.py reads to say whether a session's
+        # numbers are held out from this forest or in-sample; without them it can only warn.
         pickle.dump({"model": model, "classes": list(model.classes_),
-                     "feature": "event/v1", "n_train": len(X)}, fh)
-    print(f"\nwrote {args.out}: {len(X)} rows from {len(clips)} independent clips "
-          f"({args.aug} augmented copies per clip), classes {list(model.classes_)}, "
-          f"feature event/v1")
-    print("n_train counts rows. n_independent_clips is "
-          f"{len(clips)}, and that is the number any capacity claim has to quote.")
+                     "feature": "event/v1", "n_train": len(X), "n_events": len(fit),
+                     "train_groups": groups, "train_sessions": train_sessions,
+                     "other": args.other, "j_thumb_max": F.J_THUMB_MAX}, fh)
+    print(f"\nwrote {args.out}: {len(X)} rows from {len(fit)} events in GROUPS={groups} "
+          f"independent prompted items ({args.aug} augmented copies per event), classes "
+          f"{list(model.classes_)}, feature event/v1, sessions {train_sessions}")
+    print(f"n_train counts rows. GROUPS is {groups}, and that is the number any capacity "
+          "claim has to quote.")
 
 
 if __name__ == "__main__":

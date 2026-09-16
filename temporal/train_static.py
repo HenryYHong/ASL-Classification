@@ -1,13 +1,36 @@
-"""Retrain the 24-class static-letter forest on the palm-normalized feature.
+"""Train the 24-class static-letter forest that ships (model_static.p).
 
-Also runs the ablation that justifies the change. The original 42-D feature subtracts
-min(x)/min(y) but never divides by hand size, so it encodes how close the hand was to the
-camera. That inflates accuracy on a single-session benchmark -- where camera distance is a
-free label -- and degrades in use. Dividing by the palm triangle removes it.
+What ships, and why each piece is there (every number is leave-one-session-out over the four
+sessions, 4,878 held-out frames, from crossval_static.py -- the only protocol that measures
+generalization here):
 
-Read the ablation table before trusting either number: the palm-normalized feature scores
-LOWER on the leaky split, because removing scale removes a cue the old forest was using to
-re-identify frames from one capture burst. That is the fix working, not the fix failing.
+  feature   static/v4 (features.static_feature_v4, 112-D): the 101-D palm-normalized static/v3
+            vector plus an 11-value thumb block. The letters the 101-D vector confuses are the
+            fists (A, E, M, N, S, T) and D/X, which differ in where the thumb sits.
+  filter    static_aug.filter_training(ruleset="strong"): training frames that violate their
+            own letter's defining-geometry rule are dropped for {X, G, Q, U, V, K, R, P, D};
+            137 of 4,878 frames. Test folds are never filtered.
+  jitter    static_aug.jitter_frames(sigma 0.12 palm units, 4 copies + originals) on TRAINING
+            frames only, re-featurized. The single largest gain: +0.03 pooled / +0.07 on the
+            cross-day fold on top of the filter (0.830 / 0.690 -> 0.861 / 0.763), +0.09 /
+            +0.14 without it (0.781 / 0.650 -> 0.874 / 0.790; static_aug.py has the 2x2).
+            The +0.10 / +0.10 over the previous forest is the whole recipe, not jitter's
+            alone. The rotation augmentation it replaces lowered the pooled number
+            (0.782 -> 0.759) and was only ever justified by within-session confidence.
+  forest    RandomForestClassifier(n_estimators=100, min_samples_leaf=5, max_features="sqrt",
+            random_state=0). Larger forests (400 trees, leaf 1) score the same and are 3-6x
+            the nodes, and every node is shipped to the browser inside models.json.
+
+Together: pooled 0.86-0.87, cross-day (S1 held out) 0.76-0.78, against 0.759 / 0.659 for the
+previous rotation-augmented 101-D forest. Two implementations of the same recipe differ by
+0.01 from the jitter RNG alone, so quote the range and the hold-level CI, not a third decimal.
+
+The ablation printed first is older and narrower: it shows why the feature divides by palm
+size at all. The original 42-D feature subtracted min(x)/min(y) but never divided by hand
+size, so it encoded camera distance; on a within-burst split that reads as accuracy, in use
+it reads as failure. Read that table before trusting either number: the palm-normalized
+feature scores LOWER on the leaky split, because removing scale removes a cue the old forest
+used to re-identify frames from one capture burst. That is the fix working.
 """
 import argparse
 import os
@@ -20,6 +43,7 @@ from sklearn.metrics import accuracy_score
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
+import static_aug as A
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEQ = os.path.join(HERE, "static_sequences.npz")
@@ -27,9 +51,21 @@ OUT = os.path.join(HERE, "model_static.p")
 LETTERS = list("ABCDEFGHIKLMNOPQRSTUVWXY")
 W, H = 1920, 1080
 
+#: The shipped recipe. crossval_static.py imports these so the measured protocol and the
+#: shipped forest can never drift apart silently.
+FEATURE_TAG = "static/v4"
+FEATFN, FEATURE_DIM = F.static_feature_for(FEATURE_TAG)
+RULESET = "strong"
+JITTER_SIGMA, JITTER_COPIES = 0.12, 4
+FOREST = dict(n_estimators=100, min_samples_leaf=5, max_features="sqrt")
+
+#: Frames of one letter more than this many seconds apart belong to different holds (the
+#: signer dropped the hand and re-formed the letter). Used for the hold ids the OOF carries.
+HOLD_GAP = 0.5
+
 
 def legacy_feature(P):
-    """The feature the committed model.p uses: translation-normalized, NOT scale-normalized."""
+    """The feature the notebooks' model.p used: translation-normalized, NOT scale-normalized."""
     x, y = P[..., 0], P[..., 1]
     out = np.empty((*P.shape[:-2], 42))
     out[..., 0::2] = x - x.min(axis=-1, keepdims=True)
@@ -55,11 +91,18 @@ def load(aspect=True):
         P = lm[c][idx][:, :, :2]
         P = F.to_isotropic(P, W, H) if aspect else np.asarray(P, dtype=np.float64)
         if handed is not None:
-            labs = [str(x) for x in handed[c][idx] if str(x)[:1] in ("L", "R")]
-            if labs:
-                P = F.canonicalize_handedness(P, max(set(labs), key=labs.count))
+            P = F.canonicalize_handedness(P, modal_handedness(handed[c][idx]))
         per_class.append(P)
     return per_class
+
+
+def modal_handedness(labels):
+    """The commonest real label ("Left"/"Right") among per-frame labels, or None if there is
+    none. MediaPipe flips its label on a few frames of a held sign (two frames of the S2 M
+    hold read "Right" inside 59 "Left" ones while the coordinates barely move), and a frame
+    canonicalized by its own flipped label enters training mirrored."""
+    labs = [str(x) for x in labels if str(x)[:1] in ("L", "R")]
+    return max(sorted(set(labs)), key=labs.count) if labs else None
 
 
 def contiguous_split(per_class, frac=0.8):
@@ -90,26 +133,126 @@ def build(split, featfn, rescale=1.0):
     return np.concatenate(X), np.concatenate(y)
 
 
-def load_extra(path):
-    """Frames from a second capture session, as written by collect_motion --static-letters.
+def resolve_extra(path):
+    """An --extra path as given, or the same name under temporal/ when that is where it is.
+
+    The README's run order is written from the repository root while the session files live
+    beside this script, so `--extra static_s2.npz` used to raise FileNotFoundError.
+    """
+    if os.path.exists(path):
+        return path
+    alt = os.path.join(HERE, path)
+    if os.path.exists(alt):
+        return alt
+    raise SystemExit(f"--extra {path}: not found as given nor as {alt}")
+
+
+def load_extra(path, holds=False, per_frame_handedness=False):
+    """Frames from a later capture session, as written by collect_motion --static-letters.
 
     Merged in rather than replacing: the archive still carries most of the variety, and the
-    point of the second session is to teach the model that the same letter can look different
-    on a different day. One session is why cross-session accuracy sits at 0.52 while the
-    in-session number reads 0.97.
+    point of a second session is to teach the model that the same letter can look different
+    on a different day. One session is why cross-session accuracy sat at 0.52 while the
+    in-session number read 0.97.
+
+    Returns {class index: (n,21,2)}; with holds=True, {class index: ((n,21,2), (n,) hold id)}
+    where a hold is a run of one letter whose consecutive stamps are within HOLD_GAP (the
+    unit the out-of-fold posteriors and the word simulator count by).
+
+    Handedness is canonicalized per contiguous run of one letter in the file, with that run's
+    modal label -- the rule load() applies to the archive and the one
+    features.canonicalize_handedness documents; per-frame labels flip on a few frames and
+    would mirror those frames into training. frame_size is required: an npz without it would
+    otherwise train at a guessed aspect, and a wrong aspect is invisible in every number this
+    pipeline prints (label_events.py and train_motion.py refuse for the same reason).
+    Labels outside LETTERS (digits, prompts) are skipped, and a file that contributes no frame
+    at all is reported rather than merged silently.
+
+    per_frame_handedness=True is the previous release's behavior (each frame mirrored by its
+    own label); crossval_static.py --legacy uses it so the regression guard reproduces the
+    shipped 0.759 / 0.659 exactly. The two rules differ on 2 of the 2,500 S2-S4 frames.
     """
     d = np.load(path, allow_pickle=True)
+    if "frame_size" not in d:
+        raise SystemExit(f"{path} carries no frame_size; the aspect ratio is load-bearing and "
+                         "is not guessed. Re-record with collect_motion.py or add the (W,H) the "
+                         "session was captured at.")
     lm, letters = d["lm"], [str(x) for x in d["letters"]]
     handed = [str(x) for x in d["handed"]] if "handed" in d else ["Unknown"] * len(lm)
-    wh = np.asarray(d["frame_size"]).ravel() if "frame_size" in d else np.array([W, H])
+    stamps = np.asarray(d["stamps"], dtype=np.float64) if "stamps" in d else np.arange(len(lm))
+    wh = np.asarray(d["frame_size"]).ravel()
     per_class = {c: [] for c in range(24)}
-    for i, lab in enumerate(letters):
-        if lab not in LETTERS:
-            continue
-        P = F.to_isotropic(lm[i][None, :, :2], int(wh[0]), int(wh[1]))
-        P = F.canonicalize_handedness(P, handed[i] if handed[i][:1] in ("L", "R") else None)
-        per_class[LETTERS.index(lab)].append(P[0])
+    per_hold = {c: [] for c in range(24)}
+    skipped = set()
+    hold_no = -1
+    i = 0
+    while i < len(letters):
+        j = i
+        while j < len(letters) and letters[j] == letters[i]:
+            j += 1
+        lab = letters[i]
+        if lab in LETTERS:
+            c = LETTERS.index(lab)
+            P = F.to_isotropic(lm[i:j][:, :, :2], int(wh[0]), int(wh[1]))
+            if per_frame_handedness:
+                P = np.stack([F.canonicalize_handedness(P[k], modal_handedness([handed[i + k]]))
+                              for k in range(j - i)])
+            else:
+                P = F.canonicalize_handedness(P, modal_handedness(handed[i:j]))
+            for k in range(i, j):
+                if k == i or stamps[k] - stamps[k - 1] > HOLD_GAP:
+                    hold_no += 1
+                per_class[c].append(P[k - i])
+                per_hold[c].append(hold_no)
+        else:
+            skipped.add(lab)
+        i = j
+    if not any(per_class.values()):
+        print(f"WARNING: {os.path.basename(path)} contributed no frame -- its labels "
+              f"{sorted(skipped)} are not static letters; a digit file belongs to "
+              "train_digits.py, not here")
+    if holds:
+        return {c: (np.stack(v), np.array(per_hold[c], int)) for c, v in per_class.items() if v}
     return {c: np.stack(v) for c, v in per_class.items() if v}
+
+
+def training_rows(per_class, featfn=None, ruleset=RULESET, sigma=JITTER_SIGMA,
+                  copies=JITTER_COPIES, seed=0):
+    """Feature rows for a TRAINING set: filter, jitter, featurize. -> (X, y, frames_dropped).
+
+    Row order is every class's kept originals first, then each jittered copy as a block over
+    all classes. Row order changes the forest's bootstrap draws, so it is fixed here and
+    shared with crossval_static.py rather than left to each caller. The jitter RNG is seeded
+    by the block's content (static_aug.content_rng), so the same post-filter class block
+    always draws the same noise regardless of call order or which other classes are present.
+    A fold's block (three sessions) and the final fit's block (four sessions) are different
+    arrays for every letter the held-out session contains, so their draws are unrelated; only
+    a letter absent from the held-out session shares its augmented rows with the shipped
+    forest (S1 fold 0 of 24 letters, S2 1, S3 18, S4 20 -- and those 39 shared blocks jitter
+    byte-identically).
+    """
+    featfn = FEATFN if featfn is None else featfn
+    n_raw = sum(len(P) for P in per_class)
+    kept = A.filter_training(per_class, ruleset)
+    variants = [A.jitter_frames(P, sigma, copies, A.content_rng(seed, P)) if len(P) else [P]
+                for P in kept]
+    n_var = max(len(v) for v in variants) if variants else 1
+    X, y = [], []
+    for v in range(n_var):
+        for c, vs in enumerate(variants):
+            if v < len(vs) and len(vs[v]):
+                f = featfn(vs[v])
+                X.append(f)
+                y.append(np.full(len(f), c))
+    return np.concatenate(X), np.concatenate(y), n_raw - sum(len(P) for P in kept)
+
+
+def make_forest(seed=0, n_jobs=4):
+    return RandomForestClassifier(random_state=seed, n_jobs=n_jobs, **FOREST)
+
+
+def node_count(model):
+    return int(sum(e.tree_.node_count for e in model.estimators_))
 
 
 def main():
@@ -117,13 +260,19 @@ def main():
     ap.add_argument("--extra", nargs="*", default=[],
                     help="one or more .npz files from collect_motion --static-letters. Later "
                          "sessions are merged in, not substituted: the point is to show the "
-                         "model the same letter on different days, so the variety accumulates.")
+                         "model the same letter on different days, so the variety accumulates. "
+                         "A bare file name is also looked up under temporal/.")
+    ap.add_argument("--seed", type=int, default=0, help="forest random_state and jitter seed")
+    ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
 
     per_class = load()
+    sessions = ["S1"]
     merged = {}
     for path in args.extra:
+        path = resolve_extra(path)
         got = load_extra(path)
+        sessions.append(os.path.splitext(os.path.basename(path))[0])
         print(f"merging {os.path.basename(path)}: " +
               ", ".join(f"{LETTERS[c]}={len(v)}" for c, v in sorted(got.items())))
         for c, v in got.items():
@@ -132,52 +281,44 @@ def main():
         print()
         per_class = [np.concatenate([P, merged[c]]) if c in merged else P
                      for c, P in enumerate(per_class)]
+    n_frames = sum(len(P) for P in per_class)
     tr, te = contiguous_split(per_class)
 
     print("=== scale-robustness ablation (contiguous per-class split) ===")
     print("test landmarks rescaled about the hand centroid; training never sees the rescale\n")
-    print(f"{'k':>6}  {'legacy 42-D':>12}  {'palm-normalized':>16}")
+    print(f"{'k':>6}  {'legacy 42-D':>12}  {FEATURE_TAG:>16}")
     rows = {}
-    for name, fn in (("legacy", legacy_feature), ("palm", F.shape42)):
+    for name, fn in (("legacy", legacy_feature), ("shipped", FEATFN)):
         Xtr, ytr = build(tr, fn)
-        model = RandomForestClassifier(n_estimators=300, random_state=0).fit(Xtr, ytr)
+        model = make_forest(args.seed).fit(Xtr, ytr)
         rows[name] = []
         for k in (0.7, 0.85, 1.0, 1.2, 1.5):
             Xte, yte = build(te, fn, rescale=k)
             rows[name].append(accuracy_score(yte, model.predict(Xte)))
     for i, k in enumerate((0.7, 0.85, 1.0, 1.2, 1.5)):
-        print(f"{k:>6.2f}  {rows['legacy'][i]:>12.3f}  {rows['palm'][i]:>16.3f}")
+        print(f"{k:>6.2f}  {rows['legacy'][i]:>12.3f}  {rows['shipped'][i]:>16.3f}")
     print(f"\nlegacy spread across k: {max(rows['legacy']) - min(rows['legacy']):.3f}"
-          f"   palm-normalized spread: {max(rows['palm']) - min(rows['palm']):.3f}")
+          f"   {FEATURE_TAG} spread: {max(rows['shipped']) - min(rows['shipped']):.3f}")
 
     # Ship a model trained on everything; the split above exists to characterize, not to select.
-    Xall, yall = build([(c, P) for c, P in enumerate(per_class)], F.static_feature)
-
-    # Rotation augmentation. The archive is one signer holding each letter once, so the model
-    # sees each handshape at essentially a single wrist angle and is over-confident about it --
-    # which shows up live as correct-but-under-confident predictions that fall below the
-    # emission floor and abstain silently. Rotating the normalized shape is exact (shape42 is
-    # already centered and scaled, so a rotation is a rigid transform of the feature) and costs
-    # no new data. Measured on the contiguous split: mean winner confidence 0.818 -> 0.886 and
-    # A's confidence 0.88 -> 1.00, with accuracy unchanged within noise (0.908 -> 0.914).
-    # Rotate the LANDMARKS and re-featurize, rather than rotating the feature vector: the
-    # extent half is min-subtracted, so rotating it directly would not correspond to any hand.
-    Xa, ya = [Xall], [yall]
-    for deg in (-12, -6, 6, 12):
-        a = np.radians(deg)
-        R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
-        rotated = [(c, (P - P.mean(axis=(0, 1), keepdims=True)) @ R.T
-                    + P.mean(axis=(0, 1), keepdims=True)) for c, P in enumerate(per_class)]
-        Xr, yr = build(rotated, F.static_feature)
-        Xa.append(Xr)
-        ya.append(yr)
-    Xall, yall = np.concatenate(Xa), np.concatenate(ya)
-    print(f"\ntraining on {len(Xall)} rows ({len(Xa)}x rotation-augmented)")
-    model = RandomForestClassifier(n_estimators=400, random_state=0).fit(Xall, yall)
-    with open(OUT, "wb") as fh:
-        pickle.dump({"model": model, "classes": LETTERS, "feature": "static/v3",
-                     "aspect": [W, H], "n_train": len(Xall)}, fh)
-    print(f"\nwrote {OUT}: {len(Xall)} frames, {len(LETTERS)} classes, feature static/v3")
+    Xall, yall, dropped = training_rows(per_class, seed=args.seed)
+    print(f"\ntraining on {len(Xall)} rows: {n_frames} frames from {len(sessions)} sessions, "
+          f"{dropped} dropped by the {RULESET!r} rules, x{1 + JITTER_COPIES} with jitter "
+          f"sigma {JITTER_SIGMA} (originals kept), {FEATURE_DIM}-D {FEATURE_TAG}")
+    model = make_forest(args.seed).fit(Xall, yall)
+    assert list(model.classes_) == list(range(len(LETTERS))), \
+        "a letter has no training frame; the segmenter indexes classes by position"
+    blob = {"model": model, "classes": LETTERS, "feature": FEATURE_TAG,
+            "aspect": [W, H], "n_train": int(len(Xall)), "n_frames": int(n_frames),
+            "frames_dropped": int(dropped), "filter": RULESET,
+            "augment": {"kind": "jitter", "sigma_palm": JITTER_SIGMA, "copies": JITTER_COPIES,
+                        "originals_kept": True, "rng": "static_aug.content_rng", "seed": args.seed},
+            "forest": dict(FOREST, random_state=args.seed), "sessions": sessions}
+    with open(args.out, "wb") as fh:
+        pickle.dump(blob, fh)
+    print(f"\nwrote {args.out}: {len(Xall)} rows, {len(LETTERS)} classes, feature {FEATURE_TAG}, "
+          f"{len(model.estimators_)} trees, {node_count(model)} nodes, "
+          f"{os.path.getsize(args.out) / 1e6:.2f} MB pickle")
 
 
 if __name__ == "__main__":

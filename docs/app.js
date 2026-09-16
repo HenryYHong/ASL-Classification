@@ -6,7 +6,7 @@
  * forest.js and segmenter.js, which are ports of the Python of the same names; everything here
  * is plumbing and the overlay.
  *
- * Three things in here are not plumbing:
+ * Four things in here are not plumbing:
  *
  * MIRRORING. The frame given to MediaPipe is never flipped. MediaPipe assigns its handedness
  * label in image space, so a flipped frame reports a right hand as "Left", and
@@ -15,18 +15,23 @@
  * is mirrored because signing into a non-mirrored image is disorienting, and that mirror
  * happens in exactly one function, toDisplayPx, plus the one drawImage that uses the same flip.
  *
+ * THE LABEL SWAP. The Tasks API this page runs and the legacy `solutions` API that produced every
+ * training landmark disagree about what "Left" means on the same unflipped frame. The swap lives
+ * in one exported function, swapTasksHandedness, and golden.json's Tasks cases go through it.
+ *
  * SECONDS. Every threshold in thresholds.py is in seconds and palm widths, never milliseconds
  * or frames. MediaPipe's detectForVideo wants milliseconds. The two clocks meet at exactly one
  * line in onFrame, and the segmenter never sees a millisecond.
  *
- * THE SELF-CHECK. web/golden.json is run through the loaded forest before the camera is ever
+ * THE SELF-CHECK. docs/golden.json is run through the loaded forests before the camera is ever
  * touched, and the result is printed in the debug panel. Every expensive bug in this project
  * was a silent divergence between two implementations that looked equivalent, and from the
  * emitted letters alone "the tree walk is subtly wrong" is indistinguishable from "this
  * visitor's hands are not the signer's".
  */
 import {
-  TIP_FOR_ARM, pathLength, toIsotropic, canonicalizeHandedness, staticFeature,
+  TIP_FOR_ARM, pathLength, toIsotropic, canonicalizeHandedness, staticFeatureFor,
+  STATIC_FEATURES, DEFAULT_STATIC_TAG,
 } from './features.js';
 import { loadModels, predictProba } from './forest.js';
 import { buildIndex, closestWord, posteriorsFor } from './words.js';
@@ -42,12 +47,24 @@ const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarke
 const DISPLAY_W = 960;
 const FPS_WINDOW = 30;
 
-//: The feature transform each branch of features.js builds. live_demo.py refuses to start when
-//: a pickled model's tag is not the one the code constructs, because train/serve skew is this
-//: project's documented failure mode and it is completely silent -- a model trained on a
-//: different transform still returns confident probabilities. Same check here.
-const STATIC_FEATURE_TAG = 'static/v3';
+//: The feature transform each forest was trained on, by the tag models.json carries for it.
+//: features.js can build every tag in STATIC_FEATURES and the Segmenter picks the function by
+//: the tag, so a registered tag can never produce train/serve skew; an UNREGISTERED tag is the
+//: one failure that produces no symptom at all -- the vector is the right length, the forest is
+//: confident, every letter is wrong -- and live_demo.py refuses to start on it. Same refusal
+//: here. Both forests are expected on static/v4 (112-D): the digit forest was trained and
+//: measured on it too (train_digits.py), so one feature path serves both modes; another
+//: registered tag is accepted with a note.
+export const LETTERS_TAG = 'static/v4';
+export const DIGITS_TAG = 'static/v4';
 const MOTION_FEATURE_TAG = 'event/v1';
+
+//: Seconds a single download may produce nothing before the load line says so. A blocked CDN
+//: and a slow connection look the same for the first few seconds; after this long they do not.
+const LOAD_WATCHDOG_S = 20;
+//: Chrome rejects a keepalive fetch whose body (together with every other in-flight keepalive
+//: body) exceeds 64 KiB, before anything reaches the server. Records above this go without it.
+const KEEPALIVE_MAX_BYTES = 60 * 1024;
 
 //: mp.solutions.hands.HAND_CONNECTIONS, written out. The Tasks API carries the same list as a
 //: static on HandLandmarker, but the skeleton has to be drawable before that dynamic import
@@ -84,8 +101,11 @@ export function fpsFrom(times) {
 }
 
 /** The overlay's gate line: what is armed, or what could arm. Follows draw_overlay() exactly,
- *  including the tie rule -- J wins a tie because _stepSettling arms "J" when jf >= zf. */
-export function gateStatus(jf, zf, arm, th) {
+ *  including the tie rule -- J wins a tie because _stepSettling arms "J" when jf >= zf. With
+ *  arming off (numbers mode) it says so, because a gate that reads "ready" but can never arm
+ *  would send a visitor looking for a J bug in a mode that has no J. */
+export function gateStatus(jf, zf, arm, th, armGates = true) {
+  if (!armGates) return { tag: 'gates off (numbers)', color: 'var(--dim)' };
   if (arm) return { tag: `ARMED ${arm}`, color: 'var(--tracking)' };
   const ready = (jf >= th.GATE_ARM_FRAC && jf >= zf) ? 'J'
     : (zf >= th.GATE_ARM_FRAC ? 'Z' : null);
@@ -93,14 +113,54 @@ export function gateStatus(jf, zf, arm, th) {
   return { tag: 'gate none', color: 'var(--dim)' };
 }
 
-/** Run golden.json's cases through the loaded model. Returns {n, worst, worstEnd, wrong, tol, ok}.
+/** The handedness label the training pipeline would have reported for this frame, from the
+ * label the Tasks API reports.
+ *
+ * SWAP the label. The two MediaPipe APIs disagree about what they are labeling: the legacy
+ * `solutions` API that produced every training landmark reports handedness as if the image
+ * were mirrored (the selfie convention), while the Tasks API reports it for the frame exactly
+ * as given. Same hand, same unflipped frame, opposite word.
+ *
+ * Left unswapped, canonicalizeHandedness declines to mirror a hand that Python DID mirror, so
+ * every x coordinate reaches the model negated. Measured on real browser gestures: orient.x
+ * came out +0.574 where training averages -0.575 (z = +8.8) and every path*.x had its sign
+ * flipped, which turned J into MOVE at 0.41 and left Z abstaining at 0.45. Negating x on those
+ * same spans recovers EMIT J p=0.97 and EMIT Z p=0.93. On the archive re-extracted with the
+ * Tasks API, the cross-day static model scores 0.775 with the swap and 0.730 without it.
+ *
+ * Every Tasks label on this page goes through here: the frame loop, and golden.json's cases
+ * tagged api "tasks", which store the RAW Tasks label so this function is what the self-check
+ * exercises. Anything other than the two words passes through unchanged.
+ */
+export function swapTasksHandedness(raw) {
+  return raw === 'Left' ? 'Right' : raw === 'Right' ? 'Left' : raw;
+}
+
+/** Whether a static forest's feature tag is one features.js can build, and whether it is the
+ * tag this page expects for that forest: {tag, known, expected, asExpected}. A null tag is the
+ * oldest export format and means static/v3, as in the Python. */
+export function staticTagStatus(model, expected) {
+  const tag = model.feature == null ? DEFAULT_STATIC_TAG : String(model.feature);
+  const known = Object.prototype.hasOwnProperty.call(STATIC_FEATURES, tag);
+  return { tag, known, expected, asExpected: known && tag === expected };
+}
+
+/** Run golden.json's cases through the loaded forests. Returns {n, worst, worstEnd, wrong,
+ * tol, ok, counted}.
+ *
+ * `models` is {static, digits}: each case names its forest in `model` ("static" when absent),
+ * and the feature function for a case is the one that forest's tag selects through
+ * STATIC_FEATURES -- both shipped forests on static/v4 (112-D). A case whose forest
+ * models.json does not carry, or whose stored vector width or class count disagrees with that
+ * forest, THROWS: those are exactly the export-side mismatches the self-check exists to catch,
+ * and the caller reports them as a problem, not as "not run".
  *
  * TWO legs, because a single number cannot say which half broke:
  *
- *   worst     golden.json's own 101-D vector -> the forest. A failure here is the tree walk.
+ *   worst     golden.json's own feature vector -> the forest. A failure here is the tree walk.
  *   worstEnd  the case's RAW landmarks -> toIsotropic -> canonicalizeHandedness ->
- *             staticFeature -> the forest: the entire path the camera frames take. A failure
- *             here with `worst` clean is the feature transform.
+ *             the feature function -> the forest: the entire path the camera frames take. A
+ *             failure here with `worst` clean is the feature transform.
  *
  * The second leg is not redundant and it is the more important one. The feature transform is
  * where this project's expensive bugs actually lived -- a permuted pair-distance block, a
@@ -108,41 +168,60 @@ export function gateStatus(jf, zf, arm, th) {
  * features.js at all. Measured: permuting the distance block turns case 0 from A p=1.00 into
  * M p=0.16, and the forest leg still reports a perfect 0.0.
  *
- * Both legs compare PROBABILITIES rather than the feature vectors, even though golden.json
- * carries shape42 and static_feature. Its landmarks are rounded to 6 decimals while its outputs
- * were computed from the full-precision originals, so a faithful recomputation differs from the
- * stored vectors by up to 1.9e-5 -- above the file's 1e-6 feature tolerance, and not a port
- * error. The probabilities are unaffected by that rounding (measured worst 0.0 over all 15
- * cases), so they are the field that can be checked exactly. test_features.mjs makes the
- * feature-level comparison with the rounding allowance stated explicitly.
+ * Cases tagged api "tasks" store the label the Tasks API reported and are routed through
+ * swapTasksHandedness before canonicalizeHandedness, exactly as the frame loop routes a live
+ * label; fed raw, the same cases fail this leg by probability (test_app.mjs checks that).
+ *
+ * Both legs compare PROBABILITIES because they are what the page acts on and they exercise the
+ * forest walk. golden.json's landmarks are rounded to 6 decimals BEFORE every stored field is
+ * computed (export_models.make_case), so a correct port reproduces its features to their own
+ * 6-decimal output rounding (5e-7 measured over the 41 cases, against the file's 1e-6) and
+ * test_features.mjs holds that feature-level comparison to the file's 1e-6 with no allowance.
+ * Probabilities differ from sklearn's by up to ~2e-6 on these cases because leaves are rounded
+ * to 4 decimals on export (bound 5e-5), well inside the 1e-4 tolerance.
  */
-export function checkGolden(model, golden) {
+export function checkGolden(models, golden) {
   const tol = (golden.tolerance && golden.tolerance.probabilities) || 1e-4;
   let worst = 0.0;
   let worstEnd = 0.0;
   let wrong = 0;
   let n = 0;
+  const counted = {};
   for (const c of golden.cases) {
-    const p = predictProba(model, c.static_feature);
-    if (p.length !== c.static_probs.length) {
-      throw new Error(`golden case ${n}: forest returned ${p.length} probabilities, `
-        + `expected ${c.static_probs.length}`);
+    const which = c.model || 'static';
+    const model = models[which];
+    if (!model) {
+      throw new Error(`golden case ${n} needs the ${which} forest, which models.json does not carry`);
     }
+    const [featureFn, dim] = staticFeatureFor(model.feature == null ? null : model.feature);
+    if (c.static_feature.length !== dim) {
+      throw new Error(`golden case ${n}: stored a ${c.static_feature.length}-D feature, but the `
+        + `${which} forest (${model.feature}) takes ${dim}-D`);
+    }
+    if (c.static_probs.length !== model.classes.length) {
+      throw new Error(`golden case ${n}: stores ${c.static_probs.length} probabilities, the `
+        + `${which} forest has ${model.classes.length} classes`);
+    }
+    const p = predictProba(model, c.static_feature);
     for (let i = 0; i < p.length; i++) worst = Math.max(worst, Math.abs(p[i] - c.static_probs[i]));
 
     // The same case again, entered the way a frame enters: raw MediaPipe landmarks, the
-    // handedness label as reported on an unflipped frame, and the capture size.
-    const P = canonicalizeHandedness(toIsotropic(c.landmarks, c.width, c.height), c.handedness);
-    const q = predictProba(model, staticFeature(P));
+    // handedness label as the training API would have reported it on an unflipped frame, and
+    // the capture size.
+    const label = c.api === 'tasks' ? swapTasksHandedness(c.reported_handedness) : c.handedness;
+    const P = canonicalizeHandedness(toIsotropic(c.landmarks, c.width, c.height), label);
+    const q = predictProba(model, featureFn(P));
     let bi = 0;
     for (let i = 0; i < q.length; i++) {
       worstEnd = Math.max(worstEnd, Math.abs(q[i] - c.static_probs[i]));
       if (q[i] > q[bi]) bi = i;
     }
     if (model.classes[bi] !== c.predicted) wrong += 1;
+    counted[which] = (counted[which] || 0) + 1;
     n += 1;
   }
-  return { n, worst, worstEnd, wrong, tol, ok: worst <= tol && worstEnd <= tol && wrong === 0 };
+  return { n, worst, worstEnd, wrong, tol, counted,
+           ok: worst <= tol && worstEnd <= tol && wrong === 0 };
 }
 
 /** The path length of the live track, in palm units: the number the L_MIN/L_MAX veto reads.
@@ -174,7 +253,7 @@ function boot() {
   const ui = {
     start: el('start'), stop: el('stop'), loadstate: el('loadstate'),
     stage: el('stage'), video: el('cam'), canvas: el('view'),
-    letters: el('letters'), clear: el('clear'),
+    letters: el('letters'), clear: el('clear'), mode: el('mode'),
     state: el('state'), armtag: el('armtag'), fps: el('fps'),
     vval: el('vval'), vmeter: el('vmeter'), vticks: el('vticks'),
     sval: el('sval'), smeter: el('smeter'), sticks: el('sticks'),
@@ -186,22 +265,53 @@ function boot() {
     fatal: el('fatal'), fatalmsg: el('fatalmsg'),
   };
   const ctx = ui.canvas.getContext('2d');
+  // Nothing can be started until models.json and MediaPipe are here: a click before that ran
+  // the frame loop into a landmarker that did not exist yet and reported a false "MediaPipe
+  // stopped processing frames". index.html ships the button disabled for the same reason;
+  // this is the guard against a markup edit removing it. The Numbers toggle gets the same
+  // treatment: until the letters segmenter is built there is nothing to switch, and on a page
+  // blocked before the thresholds were validated a click used to reach buildSegmenter with
+  // `th` unset and throw out of the click handler.
+  if (ui.mode) ui.mode.disabled = true;
+  ui.start.disabled = true;
 
   let th = null;
   let seg = null;
-// Localhost only: post diagnostics to devserver.py, the browser twin of live_demo.py --log.
-// A deployed visitor posts nothing -- there is no endpoint and the guard short-circuits first.
-const LOGGING = ['localhost', '127.0.0.1'].includes(location.hostname);
-function postLog(obj) {
-  if (!LOGGING) return;
-  try {
-    fetch('/log', { method: 'POST', headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify(obj) + '\n', keepalive: true }).catch(() => {});
-  } catch (e) { /* diagnostics must never break the demo */ }
-}
+  let models = null;
+  // Letters on every load, never persisted: a visitor returning to a page silently left in
+  // numbers mode would see spurious zeros from a relaxed hand with no cue why.
+  let mode = 'letters';
 
-const trackLog = [];
-let nTracks = 0;
+  // Localhost only, and only when devserver.py is the server: post diagnostics to it, the
+  // browser twin of live_demo.py --log. A deployed visitor posts nothing -- there is no
+  // endpoint and the guard short-circuits first. The endpoint is probed ONCE, because
+  // `python -m http.server` (which the README also suggests) answers every POST with a 501,
+  // and a hold that abstains posts on every frame: thirty red lines a second in the console
+  // for nothing. devserver.py answers OPTIONS /log with 204; the stdlib server does not.
+  let LOGGING = false;
+  if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+    fetch('/log', { method: 'OPTIONS' })
+      .then((r) => { LOGGING = r.status === 204; })
+      .catch(() => { LOGGING = false; });
+  }
+  function postLog(obj) {
+    if (!LOGGING) return;
+    try {
+      const body = JSON.stringify(obj) + '\n';
+      const opts = { method: 'POST', headers: { 'content-type': 'application/json' }, body };
+      // keepalive lets a record survive the tab closing, but the browser caps keepalive bodies
+      // at 64 KiB (all in-flight ones together) and REJECTS a larger one before sending it. A
+      // long track at 30-60 fps (frames x 21 x 2 doubles, ~900 B per frame) is that large,
+      // and those are exactly the records the instrument exists for, so big bodies go
+      // without keepalive. A record that still fails is said so in the console, once per
+      // record, rather than swallowed.
+      if (body.length <= KEEPALIVE_MAX_BYTES) opts.keepalive = true;
+      fetch('/log', opts).catch((e) => console.warn(`postLog dropped a ${body.length} B record: ${e.message}`));
+    } catch (e) { /* diagnostics must never break the demo */ }
+  }
+
+  const trackLog = [];
+  let nTracks = 0;
   let landmarker = null;
   let stream = null;
   let running = false;
@@ -210,10 +320,9 @@ let nTracks = 0;
   // the word layer can score candidate spellings when the word ends. Cleared at every break.
   let wordBuf = [];
   let wordIndex = null;
-  // `models` lives inside load(); onEmission runs in this scope and cannot see it. Keeping the
-  // class list here is the fix -- reaching for models.static.classes from the emission handler
-  // throws ReferenceError on the first letter recognized, which presents as the page going
-  // silent the moment it starts working.
+  // The class list of the forest the running segmenter votes with. It follows the mode
+  // (24 letters or 10 digits) and is what onEmission/posteriorsFor read; reaching for
+  // models.static.classes from the emission handler would name a letter for a digit.
   let staticClasses = null;
   // Timestamp of the last frame a hand was actually detected in. A word break is measured from
   // here rather than from the last emission, because the pause after the final letter of a word
@@ -228,58 +337,182 @@ let nTracks = 0;
   let lastTs = -1;
   let note = '';
 
-  //: What the problem box is currently showing, so that starting the camera can clear the
-  //: camera's own problem and nothing else. Clearing it unconditionally erased the self-check
-  //: warning at exactly the moment it starts mattering -- the user is now signing at a
-  //: recognizer that has already said it does not reproduce Python's answers.
-  let fatalKind = null;
+  //: The problem box holds one message PER KIND, not one message. Starting the camera retracts
+  //: the camera's own problem and nothing else; the mode toggle retracts its own. With a
+  //: single slot a camera refusal replaced the self-check warning and the next successful
+  //: Start hid the box -- "do not trust the letters" gone at exactly the moment it starts
+  //: mattering, the user now signing at a recognizer that has already said it does not
+  //: reproduce Python's answers. Every open problem is shown; the box hides only when none is.
+  const problems = new Map();
+  function paintProblems() {
+    ui.fatal.hidden = problems.size === 0;
+    ui.fatalmsg.textContent = [...problems.values()].join(' ');
+  }
 
   /** Say what went wrong, naming the step that failed. `blocking` means nothing usable is
    *  left; a non-blocking problem is still shown, because a page that quietly drops half of
    *  itself is exactly how "J is unreachable" hides. */
   function problem(msg, blocking, kind = 'other') {
-    ui.fatal.hidden = false;
-    ui.fatalmsg.textContent = msg;
-    fatalKind = kind;
+    problems.set(kind, msg);
+    paintProblems();
     if (blocking) {
       ui.start.disabled = true;
+      if (ui.mode) ui.mode.disabled = true;
       ui.loadstate.textContent = 'stopped: see the problem above';
     }
   }
 
+  /** Retract one kind of problem and nothing else. */
+  function clearProblem(kind) {
+    if (problems.delete(kind)) paintProblems();
+  }
+
+  /** Report a download that has produced nothing for LOAD_WATCHDOG_S seconds. The promise is
+   *  left to settle or fail on its own; only the load line changes, from "loading" to a
+   *  sentence that says the download is probably blocked rather than slow. */
+  function watchdog(promise, what) {
+    const timer = setTimeout(() => {
+      ui.loadstate.textContent = `still ${what} after ${LOAD_WATCHDOG_S} s. A slow connection `
+        + 'does not take this long; the download is probably blocked (a firewall, an ad '
+        + 'blocker, an offline machine). Reload the page to try again.';
+    }, LOAD_WATCHDOG_S * 1000);
+    return promise.finally(() => clearTimeout(timer));
+  }
+
   // ---------------------------------------------------------------- loading
 
+  /** The Segmenter for the current mode, built fresh. Rebuilt rather than re-pointed on a mode
+   *  change and on Stop, so a parked D cannot be delivered as a digit, a lastEmitted 'O' cannot
+   *  suppress a '0', and a restart with the hand already up starts from NO_HAND rather than
+   *  from a consumed hold. Classes are left to default: forest.js keeps models.json's class
+   *  list on the prepared model and segmenter.js reads it from there, so there is one list,
+   *  not two. The feature function likewise comes from the model's own tag. */
+  function buildSegmenter() {
+    const digits = mode === 'digits';
+    // Numbers mode: the same machine with the two vote constants DIGITS_OVERRIDES raises
+    // (VOTE_MARGIN_CLEAR, VOTE_PROB_FLOOR), the digit forest, no motion branch and no
+    // arming -- zGate passes most '1' frames, and a track would park the machine in
+    // TRACKING where nothing static is voted.
+    const thr = digits ? { ...th, ...(models.digitsThresholds || {}) } : th;
+    seg = new Segmenter(thr, {
+      staticModel: digits ? models.digits : models.static,
+      motionModel: digits ? null : models.motion,
+      armGates: !digits,
+      onHold: (h) => postLog({ kind: 'hold', mode, ...h }),
+      // Track outcomes are otherwise invisible: a gesture that never arms, or one killed by a
+      // veto, leaves no trace on screen at all. Every hard bug in the Python was found by
+      // logging exactly this, so the browser gets the same instrument.
+      onEvent: (ev) => {
+        postLog({
+          kind: 'track', reason: ev.reason || 'scored', arm: ev.arm,
+          duration: ev.duration, t: ev.t_end,
+          // ev.P is (frames x 21 x 2). Map over FRAMES, then over the landmarks inside each
+          // one -- mapping a frame straight to [p[0], p[1]] keeps two landmarks, not two
+          // coordinates, and silently logs a 2-point hand.
+          times: Array.from(ev.times),
+          P: ev.P.map((frame) => Array.from(frame, (pt) => [pt[0], pt[1]])),
+        });
+        trackLog.unshift({
+          dur: ev.duration, arm: ev.arm,
+          reason: ev.reason || 'scored', t: ev.t_end,
+        });
+        trackLog.length = Math.min(trackLog.length, 6);
+        nTracks += 1;
+      },
+    });
+    staticClasses = seg.staticClasses;
+  }
+
+  function paintMode() {
+    if (!ui.mode) return;
+    const digits = mode === 'digits';
+    ui.mode.setAttribute('aria-pressed', String(digits));
+    ui.mode.title = digits ? 'Switch back to letters' : 'Switch to numbers 0-9 (experimental)';
+  }
+
+  /** Switch between letters and numbers. The transcript is left alone; the word in progress
+   *  is dropped (its letters and digits would not spell anything together), and the
+   *  segmenter is rebuilt for the reasons buildSegmenter gives. */
+  function setMode(next) {
+    // `seg` is non-null exactly when buildSegmenter has succeeded once, i.e. models.json
+    // arrived and the Segmenter accepted its thresholds; the button is disabled until then
+    // (and again on a blocking problem), and this is the guard against a click that gets
+    // through anyway.
+    if (next === mode || !seg) return;
+    if (next === 'digits' && !models.digits) {
+      problem('This models.json carries no numbers forest, so numbers mode is not available. '
+        + 'Re-export models.json with temporal/model_digits.p present to enable it.',
+      false, 'mode');
+      return;
+    }
+    mode = next;
+    wordBuf = [];
+    ui.word.textContent = '';
+    ui.word.className = '';
+    clearProblem('mode');
+    buildSegmenter();
+    paintMode();
+  }
+
   async function load() {
-    let models;
     try {
-      ui.loadstate.textContent = 'fetching models.json (about 8 MB, cached after the first time)';
+      ui.loadstate.textContent = 'fetching models.json (about 12 MB, about 2 MB compressed, '
+        + 'cached after the first time)';
       // forest.js owns the fetch, including the gzip sniffing GitHub Pages needs. A second
       // loader here would be a second implementation of the thing this project keeps being
       // burned by having two of.
-      models = await loadModels('./models.json');
+      models = await watchdog(loadModels('./models.json'), 'fetching models.json');
     } catch (err) {
       problem(`The model file failed to load. ${err.message} `
         + `If you opened index.html from the filesystem, serve the folder over http instead: `
         + `fetch and ES modules do not work from file://.`, true);
       return;
     }
-    // A model exported from a different feature transform is the one failure that produces no
-    // symptom at all: the vector is the right length, the forest is confident, and every letter
-    // is wrong. live_demo.py exits on this; so does the page. A tag of null is tolerated, as in
-    // the Python, because the oldest pickles carry none.
-    const tagged = [[models.static, STATIC_FEATURE_TAG, 'static'],
-      [models.motion, MOTION_FEATURE_TAG, 'motion']];
-    const mismatched = tagged.filter(([m, want]) => m.feature != null && m.feature !== want);
-    if (mismatched.length) {
-      problem(mismatched.map(([m, want, which]) => `The ${which} model in models.json was `
-        + `trained on feature "${m.feature}", but this page builds "${want}".`).join(' ')
-        + ' Re-export models.json from the current temporal/ code; running it anyway would'
-        + ' produce confident nonsense rather than an error.', true);
+    // A model exported from a feature transform this page cannot build is the one failure that
+    // produces no symptom at all: the vector is the right length, the forest is confident, and
+    // every letter is wrong. live_demo.py exits on this; so does the page. A registered tag
+    // other than the expected one is accepted with a note, because the Segmenter builds the
+    // vector the tag names and no skew is possible; the note is there because the numbers
+    // quoted on this page were measured on the expected tags.
+    const roles = [['letters', models.static, LETTERS_TAG]];
+    if (models.digits) roles.push(['numbers', models.digits, DIGITS_TAG]);
+    const bad = [];
+    const odd = [];
+    for (const [which, m, want] of roles) {
+      const s = staticTagStatus(m, want);
+      if (!s.known) {
+        bad.push(`The ${which} model in models.json was trained on feature "${s.tag}", which `
+          + `this page cannot build (it knows ${Object.keys(STATIC_FEATURES).join(', ')}).`);
+      } else if (!s.asExpected) {
+        odd.push(`${which} model on ${s.tag}, expected ${want}`);
+      }
+    }
+    if (models.motion.feature != null && models.motion.feature !== MOTION_FEATURE_TAG) {
+      bad.push(`The motion model in models.json was trained on feature "${models.motion.feature}", `
+        + `but this page builds "${MOTION_FEATURE_TAG}".`);
+    }
+    if (bad.length) {
+      problem(`${bad.join(' ')} Re-export models.json from the current temporal/ code; running `
+        + 'it anyway would produce confident nonsense rather than an error.', true);
       return;
     }
+    if (odd.length) note = `feature tags: ${odd.join('; ')}`;
 
     th = models.thresholds;
-    staticClasses = models.static.classes;
+    // The Segmenter is what validates the thresholds (segmenter.js REQUIRED_THRESHOLDS): it is
+    // built BEFORE any field is read here, so an export missing one is reported as the
+    // readable "thresholds missing [...]" message and not as a TypeError on the first
+    // toFixed. The word constants are checked by words.js at every verdict instead.
+    try {
+      buildSegmenter();
+    } catch (err) {
+      problem(`The segmenter rejected the thresholds in models.json: ${err.message}`, true);
+      return;
+    }
+    paintMode();
+    // The letters segmenter exists and validated the thresholds: the toggle can switch now.
+    // MediaPipe is not needed to change mode.
+    if (ui.mode) ui.mode.disabled = false;
     ui.armfrac.textContent = th.GATE_ARM_FRAC.toFixed(2);
     ui.vetoval.textContent = th.RIGID_VETO.toFixed(2);
     ui.vsmooth.textContent = th.V_SMOOTH_WINDOW.toFixed(2);
@@ -287,31 +520,53 @@ let nTracks = 0;
 
     // Before the camera, so a broken tree walk is reported as a broken tree walk instead of as
     // a page that mysteriously reads every letter as D.
+    let golden = null;
     try {
-      const res = await fetch('./golden.json');
+      ui.loadstate.textContent = 'fetching golden.json (the self-check cases)';
+      // fetch() resolves on the headers and res.json() reads the body, so both halves are
+      // under the watchdog: a connection that drops after the headers stalls the second.
+      const res = await watchdog(fetch('./golden.json'), 'fetching golden.json');
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      const g = checkGolden(models.static, await res.json());
-      ui.selfcheck.textContent = g.ok
-        ? `${g.n}/${g.n} cases, forest ${g.worst.toExponential(1)}, `
-          + `whole path ${g.worstEnd.toExponential(1)}`
-        : `FAILED: forest ${g.worst.toExponential(1)}, whole path `
-          + `${g.worstEnd.toExponential(1)}, ${g.wrong} letters wrong (tol ${g.tol})`;
-      ui.selfcheck.className = g.ok ? 'ok' : 'err';
-      if (!g.ok) {
-        // Name the leg that failed: the two have completely different causes and only one of
-        // them is in this port's own arithmetic.
-        const where = g.worst > g.tol
-          ? 'the tree walk disagrees with sklearn'
-          : 'the tree walk is exact, so the landmark-to-feature transform is what diverges';
-        problem(`The classifier does not reproduce the outputs Python produced for the same `
-          + `inputs -- ${where}. Worst probability error: ${g.worst.toExponential(2)} from the `
-          + `stored feature vectors, ${g.worstEnd.toExponential(2)} from the raw landmarks, `
-          + `against a tolerance of ${g.tol}; ${g.wrong} of ${g.n} letters come out wrong. `
-          + `The page still runs, but do not trust the letters.`, false, 'selfcheck');
-      }
+      golden = await watchdog(res.json(), 'fetching golden.json');
     } catch (err) {
+      // Only a golden.json that cannot be fetched or parsed is "not run". Everything the check
+      // itself throws is a mismatch, handled below.
       ui.selfcheck.textContent = 'not run';
-      note = `self-check skipped: ${err.message}`;
+      note = `self-check skipped: golden.json ${err.message}`;
+    }
+    if (golden) {
+      try {
+        const g = checkGolden({ static: models.static, digits: models.digits }, golden);
+        const per = Object.keys(g.counted).map((k) => `${g.counted[k]} ${k}`).join(' + ');
+        ui.selfcheck.textContent = g.ok
+          ? `${g.n}/${g.n} cases (${per}), forest ${g.worst.toExponential(1)}, `
+            + `whole path ${g.worstEnd.toExponential(1)}`
+          : `FAILED: forest ${g.worst.toExponential(1)}, whole path `
+            + `${g.worstEnd.toExponential(1)}, ${g.wrong} letters wrong (tol ${g.tol})`;
+        ui.selfcheck.className = g.ok ? 'ok' : 'err';
+        if (!g.ok) {
+          // Name the leg that failed: the two have completely different causes and only one of
+          // them is in this port's own arithmetic.
+          const where = g.worst > g.tol
+            ? 'the tree walk disagrees with sklearn'
+            : 'the tree walk is exact, so the landmark-to-feature transform is what diverges';
+          problem(`The classifier does not reproduce the outputs Python produced for the same `
+            + `inputs -- ${where}. Worst probability error: ${g.worst.toExponential(2)} from the `
+            + `stored feature vectors, ${g.worstEnd.toExponential(2)} from the raw landmarks, `
+            + `against a tolerance of ${g.tol}; ${g.wrong} of ${g.n} letters come out wrong. `
+            + `The page still runs, but do not trust the letters.`, false, 'selfcheck');
+        }
+      } catch (err) {
+        // A throw here is structural: a case for a forest models.json does not carry, or a
+        // class count or feature width that disagrees with it. That is the export-side
+        // mismatch the self-check exists to catch, so it is a problem in its own right --
+        // it used to be downgraded to "not run" with Start enabled.
+        ui.selfcheck.textContent = 'FAILED: could not run';
+        ui.selfcheck.className = 'err';
+        problem(`The self-check could not be run against this models.json: ${err.message}. `
+          + 'golden.json and models.json were not exported together. The page still runs, '
+          + 'but do not trust the letters.', false, 'selfcheck');
+      }
     }
 
     // The word list is a hint, so it loads in the background and its failure is silent: a page
@@ -322,51 +577,26 @@ let nTracks = 0;
       .then((text) => { wordIndex = buildIndex(text); })
       .catch(() => { wordIndex = null; });
 
-    try {
-      // Classes are left to default: forest.js keeps models.json's class list on the prepared
-      // model and segmenter.js reads it from there, so there is one list, not two.
-      // Track outcomes are otherwise invisible: a gesture that never arms, or one killed by a
-      // veto, leaves no trace on screen at all. Every hard bug in the Python was found by
-      // logging exactly this, so the browser gets the same instrument.
-      seg = new Segmenter(th, {
-        staticModel: models.static,
-        motionModel: models.motion,
-        onHold: (h) => postLog({ kind: 'hold', ...h }),
-        onEvent: (ev) => {
-          postLog({
-            kind: 'track', reason: ev.reason || 'scored', arm: ev.arm,
-            duration: ev.duration, t: ev.t_end,
-            // ev.P is (frames x 21 x 2). Map over FRAMES, then over the landmarks inside each
-            // one -- mapping a frame straight to [p[0], p[1]] keeps two landmarks, not two
-            // coordinates, and silently logs a 2-point hand.
-            times: Array.from(ev.times),
-            P: ev.P.map((frame) => Array.from(frame, (pt) => [pt[0], pt[1]])),
-          });
-          trackLog.unshift({
-            dur: ev.duration, arm: ev.arm,
-            reason: ev.reason || 'scored', t: ev.t_end,
-          });
-          trackLog.length = Math.min(trackLog.length, 6);
-          nTracks += 1;
-        },
-      });
-    } catch (err) {
-      problem(`The segmenter rejected the thresholds in models.json: ${err.message}`, true);
-      return;
-    }
-
     let vision;
     try {
       ui.loadstate.textContent = 'loading MediaPipe from the CDN (about 9 MB of WASM)';
-      vision = await import(`${MP_CDN}/vision_bundle.mjs`);
+      vision = await watchdog(import(`${MP_CDN}/vision_bundle.mjs`), 'loading MediaPipe from the CDN');
     } catch (err) {
       problem(`MediaPipe could not be loaded from ${MP_CDN} (${err.message}). Without it there `
         + `is nothing to find the hand in the frame.`, true);
       return;
     }
     try {
+      // forVisionTasks does no I/O, so it gets no watchdog: in tasks-vision@0.10.18's bundle it
+      // awaits an in-memory WebAssembly.instantiate of a SIMD probe and returns two path strings
+      // ({wasmLoaderPath, wasmBinaryPath}). Every MediaPipe download -- the loader <script> it
+      // injects (which pulls the 9 MB .wasm), both from the CDN, then fetch(modelAssetPath) for
+      // the .task on storage.googleapis.com -- happens inside createFromOptions, and one
+      // promise cannot say which of the three stalled, so the line names both hosts.
       const fileset = await vision.FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`);
-      landmarker = await createLandmarker(vision, fileset);
+      landmarker = await watchdog(createLandmarker(vision, fileset),
+                                  'fetching the MediaPipe WASM from cdn.jsdelivr.net or the hand '
+                                  + 'landmarker model from storage.googleapis.com');
     } catch (err) {
       problem(`MediaPipe loaded but the hand landmarker would not start (${err.message}). `
         + `The model file it fetches is hosted separately from the CDN, so this can also mean `
@@ -376,7 +606,12 @@ let nTracks = 0;
 
     ui.loadstate.textContent = `ready: ${models.static.classes.length} static letters from `
       + `${models.static.trees.length} trees, plus J and Z from the motion branch's `
-      + `${models.motion.trees.length}.${note ? ` ${note}` : ''}`;
+      + `${models.motion.trees.length}`
+      + (models.digits
+        ? `, and ${models.digits.classes.length} digits from the numbers forest's `
+          + `${models.digits.trees.length}`
+        : '')
+      + `.${note ? ` ${note}` : ''}`;
     ui.start.disabled = false;
     window.__aslReady = true;
   }
@@ -403,7 +638,7 @@ let nTracks = 0;
       // merely felt.
       opts.baseOptions.delegate = 'CPU';
       const cpu = await vision.HandLandmarker.createFromOptions(fileset, opts);
-      note = 'no GPU delegate; MediaPipe is running on the CPU';
+      note = `${note ? `${note}; ` : ''}no GPU delegate; MediaPipe is running on the CPU`;
       return cpu;
     }
   }
@@ -442,13 +677,33 @@ let nTracks = 0;
     }
     // Only a camera problem is answered by the camera starting. A self-check failure is not,
     // and hiding it here would retract "do not trust the letters" the instant it applies.
-    if (fatalKind === 'camera') {
-      ui.fatal.hidden = true;
-      ui.fatalmsg.textContent = '';
-      fatalKind = null;
+    clearProblem('camera');
+    // The stream can end without anyone pressing Stop: the device is unplugged, another
+    // application takes it, the permission is revoked from the address bar. The frame loop
+    // would then run on a frozen last frame with the state line still reading as if live.
+    const track = stream.getVideoTracks()[0];
+    if (track) {
+      track.addEventListener('ended', () => {
+        if (!running) return;
+        stopCamera();
+        problem('The camera stream ended on its own: the device was unplugged, taken by '
+          + 'another application, or its permission was revoked. Press Start to try again.',
+        false, 'camera');
+      });
     }
     ui.video.srcObject = stream;
-    await ui.video.play();
+    try {
+      await ui.video.play();
+    } catch (err) {
+      // Rare (the click's activation normally carries through the getUserMedia await), but if
+      // playback is refused the camera light is on and nothing is reading it: release it and
+      // say so, rather than leave a dead Start button and a live camera.
+      stopCamera();
+      problem(`The camera started but the video element would not play (${err.name}: `
+        + `${err.message}). The camera has been released; press Start to try again.`,
+      false, 'camera');
+      return;
+    }
     if (ui.curtain) ui.curtain.hidden = true;
     ui.stop.hidden = false;
     ui.loadstate.textContent = 'running. Nothing is uploaded; stop the camera or close the tab '
@@ -462,6 +717,14 @@ let nTracks = 0;
     running = false;
     if (stream) stream.getTracks().forEach((track) => track.stop());
     stream = null;
+    // Close the word being spelled, so its verdict is shown rather than lost, and start the
+    // next session from NO_HAND: a segmenter kept across Stop/Start resumed in a consumed
+    // HOLD when the hand was already up (nothing emitted until it moved) and could not
+    // re-emit the last letter; the old wall-clock in lastHandT would have written a word
+    // break into the middle of the first word of the next session.
+    closeWord();
+    if (models) buildSegmenter();
+    lastHandT = null;
     // Drop the drawing history: a trail from the previous session would otherwise be drawn over
     // the first frames of the next one, and the fps figure would average across the gap.
     pxHist = [];
@@ -518,22 +781,10 @@ let nTracks = 0;
       lm = res.landmarks[0].map((p) => [p.x, p.y, p.z]);
       // 0.10.x names it `handednesses`; other builds name it `handedness`. Either way the label
       // is assigned in image space on the frame as given -- which is unflipped here, exactly as
-      // it was unflipped in training.
+      // it was unflipped in training -- and then swapped into the training API's convention.
       const hs = res.handednesses || res.handedness;
       if (hs && hs.length && hs[0].length) {
-        // SWAP the label. The two MediaPipe APIs disagree about what they are labeling: the
-        // legacy `solutions` API that produced every training landmark reports handedness as if
-        // the image were mirrored (the selfie convention), while the Tasks API reports it for
-        // the frame exactly as given. Same hand, same unflipped frame, opposite word.
-        //
-        // Left unswapped, canonicalizeHandedness declines to mirror a hand that Python DID
-        // mirror, so every x coordinate reaches the model negated. Measured on real browser
-        // gestures: orient.x came out +0.574 where training averages -0.575 (z = +8.8) and
-        // every path*.x had its sign flipped, which turned J into MOVE at 0.41 and left Z
-        // abstaining at 0.45. Negating x on those same spans recovers EMIT J p=0.97 and
-        // EMIT Z p=0.93.
-        const raw = hs[0][0].categoryName;
-        handed = raw === 'Left' ? 'Right' : raw === 'Right' ? 'Left' : raw;
+        handed = swapTasksHandedness(hs[0][0].categoryName);
       }
       pxHist.push({ t, lm });
       // The same span of history the segmenter keeps, read from the thresholds rather than
@@ -579,6 +830,10 @@ let nTracks = 0;
     const line = document.createElement('div');
     const conf = Number.isFinite(em.confidence) ? em.confidence.toFixed(2) : '?';
     line.textContent = `${t.toFixed(2)}  ${em.letter}  ${em.kind.padEnd(6)} p=${conf}`;
+    // index.html seeds the log with a placeholder text node ("-"); childElementCount and
+    // lastElementChild never see a text node, so it used to survive as a stray line under the
+    // log. The first emission replaces it.
+    if (ui.emlog.childElementCount === 0) ui.emlog.textContent = '';
     ui.emlog.prepend(line);
     while (ui.emlog.childElementCount > 40) ui.emlog.lastElementChild.remove();
   }
@@ -587,23 +842,33 @@ let nTracks = 0;
    * End the word being spelled: write the break, and say what it most looks like.
    *
    * Called from the frame loop rather than on a timer, so it cannot fire while the page is in a
-   * background tab with no frames arriving and silently split a word in half.
+   * background tab with no frames arriving and silently split a word in half. In numbers mode
+   * the break is still written (a space between numbers is useful) but the dictionary is not
+   * consulted: posteriorsFor maps classes to a..z and a digit has no place there, so a hint
+   * would be scored against nothing.
    */
   function closeWord() {
     if (!wordBuf.length) return;
-    const reading = wordBuf.map((x) => x.letter).join('');
-    const verdict = closestWord(reading, wordBuf.map((x) => x.post), wordIndex, th);
-    // Only two of the six verdicts are worth a visitor's attention. "unlikely" and "ambiguous"
-    // are the layer working correctly and declining to guess; announcing them would be noise.
-    if (verdict.reason === 'hint') {
-      ui.word.textContent = `closest word: ${verdict.word.toUpperCase()}`;
-      ui.word.className = 'hint';
-    } else if (verdict.reason === 'exact') {
-      ui.word.textContent = `${reading} is a word`;
-      ui.word.className = 'exact';
-    } else {
+    if (mode === 'digits') {
       ui.word.textContent = '';
       ui.word.className = '';
+    } else {
+      const reading = wordBuf.map((x) => x.letter).join('');
+      const verdict = closestWord(reading, wordBuf.map((x) => x.post), wordIndex, th);
+      // Only two of the eight verdicts are worth a visitor's attention. "unlikely", "ambiguous"
+      // and "too-short" are the layer working correctly and declining to guess, and the other
+      // three ("no-list", "too-long", "no-thresholds") mean it could not look; announcing any of
+      // them would be noise.
+      if (verdict.reason === 'hint') {
+        ui.word.textContent = `closest word: ${verdict.word.toUpperCase()}`;
+        ui.word.className = 'hint';
+      } else if (verdict.reason === 'exact') {
+        ui.word.textContent = `${reading} is a word`;
+        ui.word.className = 'exact';
+      } else {
+        ui.word.textContent = '';
+        ui.word.className = '';
+      }
     }
     wordBuf = [];
     letters.push(' ');
@@ -679,7 +944,9 @@ let nTracks = 0;
   function drawTicks() {
     // Each threshold is drawn on its meter as a tick, because a number alone does not show that
     // v_bar is sitting just under V_MOVE_ARMED. The whole point of tuning is seeing how close a
-    // signal comes to a line it never crosses.
+    // signal comes to a line it never crosses. V_MOVE_UNARMED is drawn although the state
+    // machine never reads it: it is the calibrated ceiling of held-sign speed, and the meter
+    // is where a signal is compared against it by eye.
     tick(ui.vmeter, th.V_STILL / vMax(), 'var(--hold)');
     tick(ui.vmeter, th.V_MOVE_ARMED / vMax(), 'var(--settling)');
     tick(ui.vmeter, th.V_MOVE_UNARMED / vMax(), 'var(--err)');
@@ -712,9 +979,8 @@ let nTracks = 0;
     ui.sval.textContent = seg.sigma.toFixed(3);
     // sigmaRigid is shown as a number rather than on the meter, because it is a DIFFERENT
     // signal from the one plotted: the meter draws the plain sigma, which drives SHAPE_STABLE,
-    // while RIGID_VETO reads the rotation-aligned deviation. live_demo.py draws the veto tick on
-    // the plain meter, which is convenient and slightly misleading -- the veto that aborts a
-    // track is this number, so the panel prints it.
+    // while RIGID_VETO reads the rotation-aligned deviation. The veto that aborts a track is
+    // this number, so the panel prints it.
     ui.srigid.textContent = seg.sigmaRigid.toFixed(3);
     ui.srigid.className = seg.sigmaRigid > th.RIGID_VETO ? 'err' : '';
     fill(ui.vmeter, seg.vBar, vMax());
@@ -722,7 +988,8 @@ let nTracks = 0;
     ui.fps.textContent = `${fpsFrom(frameTimes).toFixed(1)} fps`;
     if (ui.vetoval) {
       ui.vetoval.textContent = nTracks === 0
-        ? 'no gesture tracks yet - park in the launch pose, then move'
+        ? (seg.armGates ? 'no gesture tracks yet - park in the launch pose, then move'
+          : 'no gesture tracks in numbers mode')
         : `${nTracks} tracks | ` + trackLog.slice(0, 3)
             .map((x) => `${x.arm}:${x.dur.toFixed(2)}s ${x.reason}`).join('  |  ');
     }
@@ -735,7 +1002,7 @@ let nTracks = 0;
     ui.jf.textContent = jf.toFixed(2);
     ui.zf.textContent = zf.toFixed(2);
     const arm = seg.state === TRACKING ? seg._arm : null;
-    const g = gateStatus(jf, zf, arm, th);
+    const g = gateStatus(jf, zf, arm, th, seg.armGates);
     ui.armtag.textContent = g.tag;
     ui.armtag.style.color = g.color;
 
@@ -753,6 +1020,9 @@ let nTracks = 0;
 
   ui.start.addEventListener('click', () => { startCamera(); });
   ui.stop.addEventListener('click', stopCamera);
+  if (ui.mode) {
+    ui.mode.addEventListener('click', () => { setMode(mode === 'digits' ? 'letters' : 'digits'); });
+  }
   ui.clear.addEventListener('click', () => {
     letters = [];
     wordBuf = [];

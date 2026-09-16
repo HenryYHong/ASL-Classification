@@ -1,18 +1,26 @@
-"""Structural guard: every train/test split in this project partitions by clip, not by row.
+"""Structural guard: every train/test split in this project partitions by GROUP, not by row.
 
 The README documents this project already reporting an accuracy from a random split over
 frames of one held sign, where consecutive frames are near-duplicates and the number measured
 re-identification rather than recognition. train_motion.py and evaluate.py defend against a
-repeat structurally -- the array handed to the splitter has one row per clip, feature rows are
-materialised inside each side afterwards, and augmentation runs on the training side only.
-Those are properties of code that can be edited away, so they are tested here.
+repeat structurally -- the array handed to the splitter has one group id per event, feature
+rows are materialized inside each side afterwards, and augmentation runs on the training side
+only. Those are properties of code that can be edited away, so they are tested here.
+
+A group (Clip.clip_id) is one prompted item of a take, label_events.group_id(take, item) =
+take * 1000 + item, or one recorded clip (item 0). SEVERAL events share a group: the credited
+J or Z of an item and the MOVE fragments the segmenter cut from the same item, plus every
+augmented copy of them. GroupKFold must keep all of them on one side, the number of folds is
+bounded by the number of DISTINCT groups (not events), and the count train_motion prints as
+GROUPS is that number -- an event count or a row count is not evidence.
 
 Three kinds of assertion live in this file:
 
-  BEHAVIORAL, on the real splitters, run over a synthetic registry of fake clips. No footage
-  has been recorded yet, so motion_clips.npz does not exist; a test that skipped until it did
-  would be a test that never ran before the mistake it guards against could be made. The clips
-  are fabricated, but train_motion.cross_validate and its GroupKFold are not.
+  BEHAVIORAL, on the real splitters, run over a synthetic registry of fake clips. The
+  committed recording exists now, but the tests still fabricate clips so they run in
+  milliseconds and so the split is exercised on groups with more than one event, which the
+  recording only has for some items. The clips are fabricated, but train_motion.cross_validate
+  and its GroupKFold are not.
 
   A POSITIVE CONTROL. test_checker_catches_a_row_level_split feeds the same checker a
   deliberately leaky row-level split and requires it to complain. Without it, a checker that
@@ -39,6 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 import features as F
+import label_events as LE
 import train_motion as TM
 import train_static as TS
 import evaluate as EV
@@ -80,6 +89,21 @@ def registry(per_class=2):
             times = np.linspace(0.0, 0.9, T_FRAMES)
             P = BASE[None, :, :] + (_path(label, k) * PALM_S)[:, None, :]
             clips.append(TM.Clip(len(clips), times, P, label, arm))
+    return clips
+
+
+def grouped_registry(items=4):
+    """Fake events the way label_events cuts a prompted take: each item is one GROUP
+    (group_id(take, item)) holding its credited J or Z AND a MOVE fragment from the same item,
+    so two events share every group id. Items alternate J/Z over one take."""
+    clips = []
+    for item in range(items):
+        label = "J" if item % 2 == 0 else "Z"
+        gid = LE.group_id(0, item)
+        times = np.linspace(0.0, 0.9, T_FRAMES)
+        for lab in (label, "MOVE"):
+            P = BASE[None, :, :] + (_path(lab, item) * PALM_S)[:, None, :]
+            clips.append(TM.Clip(gid, times, P, lab, label, session="S1"))
     return clips
 
 
@@ -153,6 +177,57 @@ def test_registry_is_well_formed():
     assert {c.label for c in clips} == {"J", "Z", "MOVE"}
 
 
+def test_group_ids_never_collide_across_recordings():
+    """clip_id = take * 1000 + item. A per-clip recording i is group i * 1000, so a file that
+    mixes prompted takes with single clips cannot give take 0's item 3 the id of clip 3 --
+    the collision that once made GroupKFold treat independent recordings as one group."""
+    assert LE.group_id(0, 3) == 3 and LE.group_id(1, 0) == 1000 and LE.group_id(2, 17) == 2017
+    assert LE.group_id(3) == 3 * LE.GROUP_STRIDE
+    take0 = {LE.group_id(0, i) for i in range(LE.GROUP_STRIDE)}
+    clips = {LE.group_id(i) for i in range(1, 50)}
+    assert not (take0 & clips)
+    assert LE.ORPHAN_GID < LE.GROUP_STRIDE, "the orphan slot must stay inside its take's stride"
+    try:
+        LE.group_id(0, LE.GROUP_STRIDE)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an item index outside the stride must be refused, not aliased")
+
+
+def test_events_of_one_group_stay_on_one_side():
+    """Two events per group (the credited letter and a MOVE fragment of the same prompted
+    item): no fold may test one while training on the other -- that is the take-level
+    re-identification the group id exists to prevent."""
+    clips = grouped_registry(items=4)
+    groups = {c.clip_id for c in clips}
+    assert len(clips) == 2 * len(groups)
+    seen = []
+    for tr_rows, te_rows in observed_folds(clips, n_splits=4, n_aug=2):
+        assert not violations(tr_rows, te_rows)
+        te_groups = {r.clip_id for r in te_rows}
+        # a tested group is tested whole: both of its events are on the test side
+        for g in te_groups:
+            assert sum(r.clip_id == g for r in te_rows) == 2, (g, te_rows)
+        seen.extend(te_groups)
+    assert sorted(seen) == sorted(groups), sorted(seen)
+
+
+def test_fold_count_is_bounded_by_distinct_groups():
+    """8 events in 4 groups with 6 folds requested: GroupKFold(4) runs (it used to raise);
+    each group is tested exactly once, and the printed GROUPS is 4, not 8. Four groups, two
+    per letter, so every training fold still holds all three classes."""
+    clips = grouped_registry(items=4)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        pooled = TM.cross_validate(clips, 6, 0)
+    assert pooled is not None and pooled["n_clips"] == 4, pooled
+    text = out.getvalue()
+    assert "GroupKFold(4)" in text and "GROUPS = 4 independent prompted items over 8 events" in text, text
+    folds = observed_folds(clips, n_splits=6, n_aug=0)
+    assert len(folds) == 4, len(folds)
+
+
 def test_rows_carry_their_parent_clip_id():
     clips = registry()
     rows = TM.rows_from(clips, n_aug=3)
@@ -194,7 +269,7 @@ def test_cross_validate_covers_every_clip_exactly_once():
 
 
 def test_cross_validate_tests_whole_clips():
-    """Rows on the test side are materialised per whole clip, one each, from known clips.
+    """Rows on the test side are materialized per whole clip, one each, from known clips.
 
     With n_aug=0 a clip yields exactly one row, so this pins the count rather than proving a
     multi-row clip stays intact -- cross_validate never builds a multi-row test clip, which is
@@ -220,7 +295,7 @@ def test_augmentation_never_reaches_the_test_side():
 def test_checker_catches_a_row_level_split():
     """Positive control. The split this project is forbidden to make must fail the checker.
 
-    Rows are materialised for every clip first, then split at random over rows -- the exact
+    Rows are materialized for every clip first, then split at random over rows -- the exact
     shape of the mistake the README documents. Both failure modes must be reported, otherwise
     the passes above only mean the checker is asleep.
     """

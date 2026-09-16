@@ -43,6 +43,9 @@ import mediapipe as mp
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from label_events import frame_sizes
+
 DEFAULT_OUT = os.path.join(HERE, "external_clips.npz")
 
 def as_object_array(seq):
@@ -162,13 +165,24 @@ def main():
           f"session={args.session}\n")
 
     clips, stamps, handed, labels, sessions, signers, sizes = [], [], [], [], [], [], []
+    prompts = []
     if os.path.exists(args.out):
         prev = np.load(args.out, allow_pickle=True)
         clips = list(prev["clips"]); stamps = list(prev["stamps"])
         handed = list(prev["handed"]); labels = list(prev["labels"])
         sessions = list(prev["sessions"]); signers = list(prev["signers"])
-        sizes = list(np.asarray(prev["frame_size"]).reshape(-1, 2))
-        print(f"appending to {len(clips)} existing clips\n")
+        prompts = list(prev["prompts"]) if "prompts" in prev else [""] * len(clips)
+        # One (W,H) per existing clip. A collect_motion.py file may carry a single pair for
+        # the whole file; reshaping that to one row and appending one row per new clip used
+        # to leave frame_size with 1+K rows for N+K clips, and every reader then fell back to
+        # the first row for all of them -- the ingested footage was featurized at the wrong
+        # aspect with nothing printed. label_events.frame_sizes broadcasts it per clip.
+        sizes = frame_sizes(prev, len(clips))
+        if sizes is None:
+            raise SystemExit(f"{args.out} carries no frame_size; it was not written by "
+                             "collect_motion.py or this script, and appending to it would "
+                             "leave its clips with no aspect")
+        print(f"appending to {len(clips)} existing clips (frame sizes {sorted(set(sizes))})\n")
 
     kept = skipped = 0
     with mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1,
@@ -188,7 +202,7 @@ def main():
                 continue
             clips.append(lm); stamps.append(ts); handed.append(lr)
             labels.append(args.label); sessions.append(args.session); signers.append(args.signer)
-            sizes.append(size)
+            sizes.append((int(size[0]), int(size[1]))); prompts.append("")
             kept += 1
             print(f"  {name}: {len(lm)} frames, {tracked:.0%} tracked, "
                   f"{size[0]}x{size[1]}, {ts[-1]:.2f}s")
@@ -200,11 +214,14 @@ def main():
 
     # Per-clip frame sizes, because external sources are not one camera. The aspect correction
     # u = x*(W/H) is applied per clip downstream; a single global size would silently mis-correct
-    # every clip that did not match it.
+    # every clip that did not match it. `prompts` is written (empty for ingested clips) so a
+    # file that started as a prompted recording keeps the key its takes need.
+    assert len(sizes) == len(clips) == len(prompts), (len(sizes), len(clips), len(prompts))
     np.savez_compressed(args.out,
                         clips=as_object_array(clips),
                         stamps=as_object_array(stamps),
                         handed=as_object_array(handed),
+                        prompts=as_object_array(prompts),
                         labels=np.array(labels),
                         sessions=np.array(sessions),
                         signers=np.array(signers),

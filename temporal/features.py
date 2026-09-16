@@ -140,9 +140,18 @@ def pair_distances(P):
     single quantity is the whole difference between U and V, as thumb-to-fist distance is between
     M and A. Handing over the distances directly turns those into one split each.
 
-    Measured on the held-out archive split, adding this block took overall accuracy from 0.956 to
-    0.983 and M from 0.25 to 0.85. Computing the distances in 3-D instead (MediaPipe supplies a
-    z) was tried and was slightly worse: the depth channel is too noisy to help.
+    Measured on the held-out archive split (a within-burst split; static_feature says why that
+    number misleads), adding this block took overall accuracy from 0.956 to 0.983 and M from
+    0.25 to 0.85. Computing the distances in 3-D (MediaPipe supplies a z, scaled by W/H like x)
+    was slightly worse on THAT split only (0.964-0.971 against 0.968-0.981 over three seeds)
+    and is neutral-to-positive leave-one-session-out: under the shipped recipe (crossval_static
+    protocol, static/v4 with z inside these norms, seeds 0-2) pooled 0.861/0.869/0.860 ->
+    0.871/0.874/0.864 (+0.004 to +0.010, hold-level CIs all straddling zero) and the cross-day
+    fold 0.763/0.761/0.763 -> 0.783/0.795/0.786 (+0.020 to +0.034, mostly E and O); under the
+    retired rotation augmentation +0.024 pooled with a paired hold-level CI of [+0.001, +0.047].
+    Raw unscaled z is noise (0.753 against 0.759). So depth is untested as a shipped feature,
+    not ruled out: static/v3 and static/v4 stay 2-D because the browser port, the golden cases
+    and the digits forest are 2-D, and z was never measured on the page's Tasks landmarks.
     """
     import itertools
     S = palm_scale(P)
@@ -156,8 +165,11 @@ def static_feature(P):
     """What the 24-class static classifier consumes: palm-normalized shape + distances.
 
     Deliberately NOT including legacy42. Adding absolute extent raises the in-session benchmark
-    (0.968 -> 0.983) and HALVES cross-session accuracy (0.520 -> 0.320), because extent encodes
-    how this signer happened to be sitting and the within-session split rewards memorising that.
+    (0.968 -> 0.983) and roughly HALVES cross-session accuracy (0.520 -> 0.262 in the
+    train-on-archive / test-on-S2 measurement of the commit that removed it; that protocol was
+    not committed and no script here reproduces either endpoint, so the figures are the record,
+    not a re-derivable number), because extent encodes how this signer happened to be sitting
+    and the within-session split rewards memorizing that.
     The distance block is kept because it costs nothing cross-session and fixes the confusable
     pairs the raw coordinates could not express: G 0.25 -> passing, M 0.20 -> 0.65.
 
@@ -169,6 +181,93 @@ def static_feature(P):
 
 
 STATIC_DIM = 101
+
+
+#: CMC, MCP, IP, TIP of the thumb -- the chain thumb_straightness measures along. Kept apart
+#: from FINGER_CHAIN because the thumb has one joint fewer and no PIP/DIP, and because
+#: pair_distances deliberately iterates the four fingers only (static/v3 must not change).
+THUMB_CHAIN = (1, 2, 3, 4)
+
+#: The five points the thumb tip is measured against in static_feature_v4, in this order:
+#: index PIP, index DIP, middle PIP, middle DIP, thumb IP.
+THUMB_TARGETS = (6, 7, 10, 11, 3)
+
+
+def thumb_straightness(P):
+    """|tip - CMC| / (sum of the three thumb bones), 1.0 for a straight thumb. Shape (...)."""
+    a, b, c, d = THUMB_CHAIN
+    tip = np.linalg.norm(P[..., d, :] - P[..., a, :], axis=-1)
+    seg = (np.linalg.norm(P[..., b, :] - P[..., a, :], axis=-1)
+           + np.linalg.norm(P[..., c, :] - P[..., b, :], axis=-1)
+           + np.linalg.norm(P[..., d, :] - P[..., c, :], axis=-1))
+    return tip / np.maximum(seg, 1e-9)
+
+
+def tip_palm_distances(P):
+    """Distance of each fingertip (thumb, index, middle, ring, pinky) from the palm center, in
+    palm units. Shape (...,5)."""
+    S = palm_scale(P)
+    m = palm_centre(P)[..., None, :]
+    return np.linalg.norm(P[..., [4, 8, 12, 16, 20], :] - m, axis=-1) / S[..., None]
+
+
+def static_feature_v4(P):
+    """static/v4: the 101-D static/v3 vector followed by an 11-value thumb block. 112-D.
+
+    The block, in this order and nothing else:
+        [101]      thumb_straightness          |P4-P1| / (|P2-P1| + |P3-P2| + |P4-P3|)
+        [102:107]  tip_palm_distances          fingertips 4, 8, 12, 16, 20 to the palm center,
+                                               divided by palm_scale
+        [107:112]  thumb tip (4) to landmarks 6, 7, 10, 11, 3, divided by palm_scale
+    All of it on the canonical isotropic x,y; z is never read.
+
+    Why it exists: the letters the 101-D vector confuses are separated by where the THUMB sits.
+    The fists (A, E, M, N, S, T) differ only in whether the thumb lies beside the index, across
+    the fingers, or between them; D and X differ in whether the thumb touches the middle finger.
+    pair_distances carries thumb-to-fingertip distances, but the fists keep every fingertip
+    curled at almost the same place, so what separates them is the thumb against the KNUCKLES
+    -- the PIP and DIP of the index and middle finger -- and how straight the thumb is. Measured
+    leave-one-session-out over the four sessions with the same jitter augmentation (sigma 0.12,
+    x4) and the same X-rule training filter, the block adds about +0.02 on the cross-day fold
+    (the November archive held out; 3-seed means 0.746 -> 0.757 in one implementation, seed 0
+    0.754 -> 0.789 in a second that differs only in jitter RNG) and +0.01 pooled. That is
+    within one realistic seed spread, so it is kept for the geometry it encodes and for the
+    consistent direction of the effect (every nested inner fold preferred it by 0.01-0.04),
+    not as a large win.
+
+    Both shipped forests -- the 24-letter model_static.p and the 10-digit model_digits.p
+    (train_digits.py measured it 0.986 leave-signer-out on either tag and 0.162 against 0.267
+    idle false-digit on this one) -- and every golden.json case are on this tag; static/v3
+    stays registered for pickles written before the tag existed. docs/features.js reproduces
+    the block in exactly this order, so a reordering here is a silent break of the browser
+    port -- STATIC_FEATURES is what both sides key on.
+    """
+    S = palm_scale(P)
+    extra = [np.linalg.norm(P[..., 4, :] - P[..., j, :], axis=-1) / S for j in THUMB_TARGETS]
+    return np.concatenate([static_feature(P), thumb_straightness(P)[..., None],
+                           tip_palm_distances(P), np.stack(extra, axis=-1)], axis=-1)
+
+
+STATIC_DIM_V4 = 112
+
+#: The static feature a model was trained on, by the 'feature' tag its pickle carries. Every
+#: consumer that feeds a static forest (the segmenter, the export, the live demo) resolves the
+#: function through this table rather than hard-coding one, so a forest can never be fed a
+#: vector of the wrong layout without a KeyError naming the tag.
+STATIC_FEATURES = {
+    "static/v3": (static_feature, STATIC_DIM),
+    "static/v4": (static_feature_v4, STATIC_DIM_V4),
+}
+DEFAULT_STATIC_TAG = "static/v3"
+
+
+def static_feature_for(tag):
+    """(function, dim) for a static model's feature tag; None means the original static/v3
+    (pickles written before the tag existed)."""
+    tag = DEFAULT_STATIC_TAG if tag is None else str(tag)
+    if tag not in STATIC_FEATURES:
+        raise KeyError(f"unknown static feature tag {tag!r}; known: {sorted(STATIC_FEATURES)}")
+    return STATIC_FEATURES[tag]
 
 
 def extension_ratios(P):
@@ -217,17 +316,26 @@ def thumb_pinkymcp(P):
     return np.linalg.norm(P[..., 4, :] - P[..., 17, :], axis=-1) / S
 
 
+#: Thumb-tip-to-pinky-MCP ceiling of the J gate, palm units. MEASURED on the five prompted
+#: takes (113 J/Z items) and the archive: at 1.20 only 41 of the 60 J items produced a
+#: creditable event (19 had none); at 1.30, 48 of 60 (12 still have none), and the count of
+#: rest-phase spans the runtime could score is identical at both (J 10, Z 8). The price is 13
+#: of 2,278 non-I archive frames passing instead of 1 -- all of them Y (13 of Y's 100), which
+#: replayed through the whole segmenter start no track. 1.35 buys 2 more items (50/60) for 1
+#: more Y frame; 1.25 only 3 (44/60).
+J_THUMB_MAX = 1.30
+
+
 def j_gate(P):
     """Is this frame in a J launch pose (the 'I' handshape: pinky out, others curled)?"""
     e = extension_ratios(P)
     others = np.maximum(np.maximum(e["index"], e["mid"]), e["ring"])
-    # 1.20, not the 1.15 the archive alone suggested. Measured on a real 30-gesture take, the
-    # signer's thumb drifted from 1.10 early to 1.18 late as the hand tired, and the tighter
-    # threshold silently dropped the gate from 70% to 27% -- half the recording lost, with no
-    # error anywhere. On the archive 1.20 keeps I recall at 100% and admits a single frame of Y
-    # out of 100, which cannot itself produce a false J: arming is only the first of the rising
-    # edge, the vetoes and the classifier.
-    return (e["pinky"] > 1.50) & (others < 1.30) & (thumb_pinkymcp(P) < 1.20)
+    # The thumb ceiling is J_THUMB_MAX (see above). 1.15 came from the archive alone; 1.20 was
+    # set when a 30-gesture take showed the signer's thumb drifting from 1.10 to 1.18 as the
+    # hand tired; the prompted takes then showed 1.20 crediting only 41 of 60 J items, 7 of
+    # which 1.30 recovers. A frame passing the gate cannot by itself produce a false J: arming
+    # is only the first of the rising edge, the vetoes and the classifier.
+    return (e["pinky"] > 1.50) & (others < 1.30) & (thumb_pinkymcp(P) < J_THUMB_MAX)
 
 
 def z_gate(P):
@@ -334,8 +442,38 @@ def moving_average_time(values, times, window_s):
     return out
 
 
+def trailing_window(times, t_end, window_s):
+    """Indices of the frames the segmenter averages v_bar over at time t_end: every frame with
+    t >= t_end - window_s (t_end's own frame included), or the last two frames when fewer than
+    two qualify (a frame gap longer than the window). `times` must be ascending and end at or
+    after t_end; only frames at or before t_end are considered."""
+    times = np.asarray(times, dtype=np.float64)
+    n = int(np.searchsorted(times, t_end, side="right"))
+    j = int(np.searchsorted(times[:n], t_end - window_s, side="left"))
+    if n - j < 2:
+        j = max(0, n - 2)
+    return np.arange(j, n)
+
+
+def window_speed(times, centers, scales):
+    """Mean per-step palm-center speed over one window of >= 2 frames, palm-widths per second.
+
+    Each step is |m[k] - m[k-1]| / (S[k] * dt), scaled by the LATER frame's palm size, and the
+    mean is over the steps between consecutive frames of the window -- the step that enters the
+    window from before it is not counted. This is the segmenter's v_bar; every stillness and
+    motion threshold in thresholds.py is a percentile of it.
+    """
+    times = np.asarray(times, dtype=np.float64)
+    centers = np.asarray(centers, dtype=np.float64)
+    scales = np.asarray(scales, dtype=np.float64)
+    dt = np.maximum(np.diff(times), 1e-6)
+    step = np.linalg.norm(np.diff(centers, axis=0), axis=-1) / (scales[1:] * dt)
+    return float(step.mean())
+
+
 def palm_speed(centres, scales, times, window_s=0.33):
-    """Palm-centre speed in palm-widths per second, smoothed over `window_s` SECONDS.
+    """v_bar for every frame of a sequence, EXACTLY as Segmenter._update_signals computes it:
+    trailing_window + window_speed per frame. The first frame has no step and reads 0.0.
 
     The window is in seconds, not samples, because a sample count is a different amount of
     smoothing at every frame rate. A 5-sample average is 0.33 s on 15 fps footage and 0.17 s at
@@ -343,16 +481,21 @@ def palm_speed(centres, scales, times, window_s=0.33):
     holding it, so the rising-edge trigger never fires and no gesture is ever detected. That is
     not a tuning question -- it silently breaks the detector on any camera faster than the one
     the thresholds were calibrated on.
+
+    This used to be moving_average_time over per-step speeds with a leading 0.0 placeholder,
+    which averages k+1 values (the step entering the window included) where the segmenter
+    averages k. Over the archive the two differed on 2,352 of 2,354 frames (max 0.69 palm/s,
+    p95 0.841 against the segmenter's 0.859), so calibrate.py was measuring a signal the
+    thresholds are never applied to. There is now one arithmetic and both call it.
     """
     centres = np.asarray(centres, dtype=np.float64)
     times = np.asarray(times, dtype=np.float64)
     scales = np.asarray(scales, dtype=np.float64)
-    if len(centres) < 2:
-        return np.zeros(len(centres))
-    dt = np.maximum(np.diff(times), 1e-6)
-    step = np.linalg.norm(np.diff(centres, axis=0), axis=-1) / (scales[1:] * dt)
-    v = np.concatenate([[0.0], step])
-    return moving_average_time(v, times, window_s)
+    out = np.zeros(len(centres))
+    for i in range(1, len(centres)):
+        sel = trailing_window(times, times[i], window_s)
+        out[i] = window_speed(times[sel], centres[sel], scales[sel])
+    return out
 
 
 def resample_arclength(path, k=K_RESAMPLE):
@@ -434,8 +577,10 @@ def event_features(times, P_seq, arm, handedness=None):
     ext_med = [float(np.median(e[k])) for k in ("thumb", "index", "mid", "ring", "pinky")]
     orient = np.median(hand_orientation(P), axis=0)
 
-    # Same trailing-window definition the segmenter's rigidity veto uses, so [59]/[60] are
-    # directly comparable to RIGID_VETO rather than being a differently-scaled quantity.
+    # The PLAIN trailing-window sigma (rolling_shape_sigma), the segmenter's stability signal
+    # -- comparable to SHAPE_STABLE. The runtime's rigidity veto reads the rotation-ALIGNED
+    # sigma_rigid instead (rolling_shape_sigma_aligned), so [59]/[60] are not the quantity
+    # RIGID_VETO is applied to; they describe how much the handshape changed, rotation included.
     shapes = shape42(P)
     sig = rolling_shape_sigma(shapes, times)
 

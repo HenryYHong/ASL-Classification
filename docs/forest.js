@@ -1,9 +1,11 @@
 // Random-forest inference for the browser port of temporal/.
 //
-// The trees come from web/export_models.py, which flattens each sklearn estimator to the four
+// The trees come from docs/export_models.py, which flattens each sklearn estimator to the four
 // arrays a tree walk actually needs (f, t, l, r) plus the leaf class distributions. The walk here
-// must reproduce sklearn's `predict_proba` exactly; export_models.py verified the flattening to
-// 0.00e+00, so any disagreement with web/golden.json is a bug on this side, not in the export.
+// must land on sklearn's leaf in every tree (verified at 0.00e+0 against tree_.apply on 1,215
+// probes, export_models.py); the probabilities then match predict_proba to the exported 4-dp
+// leaf precision (bound 5e-5, golden tolerance 1e-4), so a disagreement with docs/golden.json
+// larger than that is a bug on this side, not in the export.
 //
 // Two things in this file are load-bearing and easy to get subtly wrong:
 //   - the comparison direction (see predictProba),
@@ -52,13 +54,17 @@ export function prepareModel(spec) {
       l: Int32Array.from(src.l),
       r: Int32Array.from(src.r),
       leafOff,
-      // Float32, not Float64: it halves the resident size of a 400-tree forest, which matters
-      // more on a phone than the bits do. It is NOT lossless -- a 4-decimal probability like
-      // 0.0833 has no exact Float32 form -- but the error is ~1e-8 per leaf, the accumulator
-      // below is Float64, and after averaging the whole forest lands within 3.4e-10 of a Float64
-      // walk over the same JSON. Measured on the motion forest, which is the one whose leaves are
-      // not one-hot; the static forest's leaves are, so it agrees exactly. Six orders below
-      // golden.json's 1e-4 tolerance. What must not change is the Float64 accumulator.
+      // Float32, not Float64: it halves the resident size of a 100-tree, 134k-node forest,
+      // which matters more on a phone than the bits do. It is NOT lossless -- a 4-decimal
+      // probability like 0.0833 has no exact Float32 form, and with min_samples_leaf 5 about
+      // 65% of the letter forest's leaves are mixed (43,412 of 66,890 at export; 61% of the
+      // digit forest's) -- but it is not what limits parity either: export_models.py rounds
+      // every leaf to 4 decimals, which bounds the page's probabilities within 5e-5 of
+      // sklearn's predict_proba by that rounding alone (5.1e-6 measured over 1,215 probes,
+      // 2.0e-6 on the golden cases, 0 argmax changes; half of golden.json's 1e-4 tolerance).
+      // Float32 adds ~2e-9 on top (1.7e-9 letters / 2.2e-9 digits, measured on the shipped
+      // forests against a Float64 walk over the same JSON with this Float64 accumulator),
+      // three orders under the rounding. What must not change is the Float64 accumulator.
       leaf,
     };
   }
@@ -73,7 +79,13 @@ export function prepareModel(spec) {
 }
 
 /**
- * Fetch and parse web/models.json, returning {static, motion, thresholds}.
+ * Fetch and parse docs/models.json, returning {static, motion, thresholds, digits,
+ * digitsThresholds}.
+ *
+ * `digits` is the numbers-mode forest, prepared when the export carried one and null
+ * otherwise (the letter export never depends on the digit pickle); `digitsThresholds` is the
+ * override block that mode applies on top of `thresholds` (thresholds.DIGITS_OVERRIDES:
+ * VOTE_MARGIN_CLEAR and VOTE_PROB_FLOOR raised), or null with it.
  *
  * `url` may point at models.json or models.json.gz. When a server sends the gzipped file with
  * Content-Encoding: gzip the browser has already decompressed it by the time we see the bytes;
@@ -102,6 +114,8 @@ export async function loadModels(url) {
     static: prepareModel(payload.static),
     motion: prepareModel(payload.motion),
     thresholds: payload.thresholds,
+    digits: payload.digits ? prepareModel(payload.digits) : null,
+    digitsThresholds: payload.digits && payload.digits.thresholds ? payload.digits.thresholds : null,
   };
 }
 
@@ -117,6 +131,14 @@ export function predictProba(model, x) {
     // which a tree walk will happily consume (reading undefined -> NaN, or just the wrong
     // column) and answer with plausible nonsense. Fail loudly instead.
     throw new Error(`predictProba: feature length ${x.length}, model expects ${model.dim}`);
+  }
+  for (let i = 0; i < x.length; i++) {
+    if (!Number.isFinite(x[i])) {
+      // `NaN <= t` is false, so a NaN feature walks RIGHT at every split it meets and the
+      // forest answers with a confident letter from a vector that carries no information at
+      // all. sklearn refuses NaN input; so does this.
+      throw new Error(`predictProba: feature ${i} is ${x[i]}; the forest takes finite numbers only`);
+    }
   }
 
   const trees = model.trees;

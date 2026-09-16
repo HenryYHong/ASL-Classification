@@ -109,16 +109,20 @@
   }
 
   /* ---- stage ---- */
+  /* The frame takes the canvas's own aspect: app.js sizes the canvas bitmap to the camera's
+     true W x H, and a box fixed at 16:9 with object-fit: cover cropped 25% of the rows off a
+     4:3 stream (the 640x480 the page asks for) -- a hand raised toward the top of the frame
+     was tracked, the state read TRACKING, and the display showed no hand. Before the camera
+     starts the canvas attributes (960x540) give the curtain a 16:9 box to sit on. */
   .frame {
     position: relative;
     border: 1px solid var(--line);
     border-radius: 10px;
     overflow: hidden;
     background: #000;
-    aspect-ratio: 16 / 9;
   }
   #cam { display: none; }
-  #view { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #view { display: block; width: 100%; height: auto; }
 
   .curtain {
     position: absolute;
@@ -160,7 +164,10 @@
     min-height: 36px;
   }
   #letters:empty::after { content: "—"; color: var(--no-hand); letter-spacing: 0; }
-  #clear, #stop { font-size: 13px; padding: 6px 12px; color: var(--dim); }
+  #clear, #stop, #mode { font-size: 13px; padding: 6px 12px; color: var(--dim); }
+  /* The Letters/Numbers toggle: pressed means numbers mode. Letters on every load, never
+     remembered -- a page silently left in numbers mode would read a relaxed hand as 0. */
+  #mode[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
   /* The word layer speaks here, and stays empty most of the time. Reserving the line keeps the
      page from jumping every time a word ends. */
@@ -251,7 +258,7 @@
   <header class="head">
     <div>
       <h1>ASL fingerspelling</h1>
-      <p class="lede">Communicate in Sign Language with 26 letters :)</p>
+      <p class="lede">Communicate in Sign Language with 26 letters, plus an experimental numbers mode :)</p>
     </div>
     <button id="theme" type="button" title="Switch theme" aria-label="Switch theme">&#9789;</button>
   </header>
@@ -260,13 +267,14 @@
     <video id="cam" playsinline muted autoplay></video>
     <canvas id="view" width="960" height="540"></canvas>
     <div class="curtain" id="curtain">
-      <button id="start">Start camera</button>
+      <button id="start" disabled>Start camera</button>
       <div id="loadstate"></div>
     </div>
   </div>
 
   <div id="outbar">
     <div id="letters" aria-live="polite"></div>
+    <button id="mode" type="button" disabled aria-pressed="false" title="Switch to numbers 0-9 (experimental)">Numbers</button>
     <button id="clear">Clear</button>
     <button id="stop" hidden>Stop</button>
   </div>
@@ -309,13 +317,31 @@
       MediaPipe finds 21 hand landmarks; a random forest reads the handshape; a state machine
       decides when a letter was actually signed. J and Z are motion letters, so they need a
       launch pose held still, then the stroke. Drop your hand for a second to end a word: if one
-      real word clearly fits the letters, the page names it underneath, and if several fit or
-      none do, it says nothing. Video stays on your device.
+      real word clearly fits the letters (common words first, from a frequency list), the page
+      names it underneath, and if several fit or none do, it says nothing. Video stays on your
+      device.
     </p>
     <p class="note">
-      Trained on one signer across four sessions: 0.759 on held-out sessions for the static
-      letters, 0.864 for J and Z. Accuracy varies with hand shape and lighting, and M, N and S
-      are the least reliable.
+      Trained on one signer across four sessions. Static letters, each session held out in
+      turn: 0.86&ndash;0.87 of 4,878 held-out frames (95% interval about 0.79&ndash;0.93 over
+      the 57 recorded holds), and 0.76&ndash;0.78 on the one fold recorded on a different day
+      (0.76 in the repository's own run, 0.761&ndash;0.763 over three seeds), which is the
+      number to plan around. The previous release measured 0.759 and 0.659 on the same folds.
+      J and Z: 0.95 over 102 events (74 J/Z gestures and 28 movements) in 80 prompted items,
+      cross-validated by prompted item (the labels changed in this release, so that
+      replaces rather than improves on the earlier 0.864). Accuracy varies with hand shape
+      and lighting; across days M, E, N, S and O are the least reliable (M, N, S and O under
+      every recipe tried; E under this one).
+    </p>
+    <p class="note">
+      Numbers mode (experimental) reads the ASL digits 0&ndash;9 with a separate forest trained
+      on 218 signers from a public dataset (Sign Language Digits Dataset, Ankara Ayranci Anadolu
+      High School, Apache-2.0), not on the author. It has not been verified on the author's hand
+      or on live video: 0.986 leave-signer-out on that dataset's photos, and 96% of the author's
+      O, V, W, F and B frames read as 0, 2, 6, 9 and 4. J and Z are off in this mode, and a
+      relaxed hand can read as 0 or 1. On the author's logged idle holds, a relaxed hand reads as
+      a digit (mostly 0 or 1) about one time in six in this mode. No word is suggested in this
+      mode.
     </p>
   </section>
 

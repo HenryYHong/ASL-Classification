@@ -44,6 +44,47 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(HERE, "motion_clips.npz")
 
+#: The two schemas this recorder writes. A motion file (clips/stamps/labels/...) and a static
+#: file (lm/stamps/letters/...) share a name only by accident, and --static-letters used to
+#: write its schema to the motion default, destroying the take recorded a minute earlier and
+#: leaving label_events.py to fail on KeyError 'clips'. Each mode now has its own default and
+#: refuses a file of the other shape.
+MOTION_KEYS = {"clips", "stamps", "labels"}
+STATIC_KEYS = {"lm", "stamps", "letters"}
+
+
+def static_default_out(session):
+    """temporal/static_<session>.npz, the name the committed S2-S4 recordings use."""
+    return os.path.join(HERE, f"static_{str(session).strip().lower()}.npz")
+
+
+def refuse_other_schema(path, want, mode):
+    """Stop before touching a file whose keys say it was written by the other mode."""
+    if not os.path.exists(path):
+        return
+    keys = set(np.load(path, allow_pickle=True).files)
+    other = STATIC_KEYS if want is MOTION_KEYS else MOTION_KEYS
+    if not want <= keys and other <= keys:
+        raise SystemExit(f"{path} holds a {'static' if other is STATIC_KEYS else 'motion'} "
+                         f"recording ({sorted(keys)}); {mode} writes a different schema and "
+                         "will not overwrite it. Pass --out with another name.")
+
+
+def per_clip_sizes(prev, n_clips):
+    """The (N,2) frame sizes of a file being resumed. Older files carry one (2,) pair for the
+    whole file; it applies to every clip they hold. Overwriting it with the current camera's
+    size on resume re-tagged clips recorded at another resolution and silently changed
+    u = x*(W/H) for half the training set."""
+    if "frame_size" not in prev:
+        raise SystemExit("the file being resumed carries no frame_size; it was not written by "
+                         "this recorder and its aspect cannot be recovered")
+    wh = np.asarray(prev["frame_size"]).reshape(-1, 2)
+    if len(wh) == n_clips:
+        return [(int(a), int(b)) for a, b in wh]
+    if len(wh) == 1:
+        return [(int(wh[0][0]), int(wh[0][1]))] * n_clips
+    raise SystemExit(f"frame_size has {len(wh)} rows for {n_clips} clips; refusing to guess")
+
 # A held sign drifts by a median of 0.018 hand-size units per frame (measured over all
 # 2,378 static frames in RandomForest/data). A real gesture moves far more than that, but
 # the recorder does not filter on it -- it records whatever you do and lets training decide.
@@ -420,10 +461,23 @@ def main():
                     help="capture session tag; the train/test split is BY SESSION, so this is "
                          "what makes an honest generalization number possible later")
     ap.add_argument("--signer", default="signer1")
-    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--out", default=None,
+                    help=f"motion recordings default to {os.path.basename(DEFAULT_OUT)} and "
+                         "are resumed (clips appended); --static-letters defaults to "
+                         "static_<session>.npz and never overwrites an existing file")
     args = ap.parse_args()
     if args.negatives is None:
         args.negatives = max(1, args.clips // 2)
+    if args.out is None:
+        args.out = static_default_out(args.session) if args.static_letters else DEFAULT_OUT
+    if args.static_letters:
+        refuse_other_schema(args.out, STATIC_KEYS, "--static-letters")
+        if os.path.exists(args.out):
+            raise SystemExit(f"{args.out} already exists. A static capture is one session's "
+                             "holds and is not resumed; record into a new --out (or a new "
+                             "--session) and pass both files to train_static.py --extra.")
+    else:
+        refuse_other_schema(args.out, MOTION_KEYS, "a motion recording")
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -443,9 +497,13 @@ def main():
                          f"terminal in System Settings > Privacy & Security > Camera")
     print(f"camera {args.camera} ok, frame {probe.shape[1]}x{probe.shape[0]}")
 
-    # Existing clips are kept, so recording can be done across several sessions.
+    # Existing clips are kept, so recording can be done across several sessions. Every clip
+    # keeps its own frame size (sizes runs parallel to clips): a second session on another
+    # camera must not re-tag the first one's aspect.
     clips, labels, stamps, handed, sessions, signers, prompts = [], [], [], [], [], [], []
-    if os.path.exists(args.out):
+    sizes = []
+    this_size = (int(probe.shape[1]), int(probe.shape[0]))
+    if not args.static_letters and os.path.exists(args.out):
         prev = np.load(args.out, allow_pickle=True)
         clips = list(prev["clips"])
         labels = list(prev["labels"])
@@ -454,8 +512,10 @@ def main():
         prompts = list(prev["prompts"]) if "prompts" in prev else [""] * len(clips)
         sessions = list(prev["sessions"]) if "sessions" in prev else ["S1"] * len(clips)
         signers = list(prev["signers"]) if "signers" in prev else ["signer1"] * len(clips)
+        sizes = per_clip_sizes(prev, len(clips))
         print(f"resuming: {len(clips)} clips already recorded "
-              f"({ {l: labels.count(l) for l in sorted(set(labels))} })")
+              f"({ {l: labels.count(l) for l in sorted(set(labels))} }), frame sizes "
+              f"{sorted(set(sizes))}; this camera is {this_size[0]}x{this_size[1]}")
 
     mp_hands = mp.solutions.hands
     drawer = mp.solutions.drawing_utils
@@ -543,7 +603,7 @@ def main():
         tracked = float(np.isfinite(lm[:, 0, 0]).mean())
         clips.append(lm); stamps.append(ts); handed.append(lr)
         labels.append("CONTINUOUS"); prompts.append(json.dumps(items))
-        sessions.append(args.session); signers.append(args.signer)
+        sessions.append(args.session); signers.append(args.signer); sizes.append(this_size)
         np.savez_compressed(args.out,
                             clips=as_object_array(clips),
                             stamps=as_object_array(stamps),
@@ -552,7 +612,7 @@ def main():
                             labels=np.array(labels),
                             sessions=np.array(sessions),
                             signers=np.array(signers),
-                            frame_size=np.array([probe.shape[1], probe.shape[0]]))
+                            frame_size=np.array(sizes, dtype=np.int32))
         print(f"\nwrote {args.out}: {len(ts)} frames, {ts[-1]:.0f}s, {tracked:.0%} tracked, "
               f"{len(items)} prompted items")
         if tracked < 0.90:
@@ -598,6 +658,7 @@ def main():
                         prompts.pop()
                         sessions.pop()
                         signers.pop()
+                        sizes.pop()
                         if dropped == label:
                             i = max(0, i - 1)
                         print(f"dropped last {dropped} clip")
@@ -622,6 +683,7 @@ def main():
                 prompts.append("")
                 sessions.append(args.session)
                 signers.append(args.signer)
+                sizes.append(this_size)
                 fps = len(ts) / max(ts[-1], 1e-6)
                 print(f"  {label} {i + 1}/{args.clips}: {len(lm)} frames, "
                       f"{detected} tracked, {fps:.1f} fps")
@@ -633,6 +695,7 @@ def main():
     if not clips:
         print("nothing recorded")
         return
+    assert len(sizes) == len(clips), (len(sizes), len(clips))
     np.savez_compressed(args.out,
                         clips=as_object_array(clips),
                         stamps=as_object_array(stamps),
@@ -641,7 +704,7 @@ def main():
                         labels=np.array(labels),
                         sessions=np.array(sessions),
                         signers=np.array(signers),
-                        frame_size=np.array([probe.shape[1], probe.shape[0]]))
+                        frame_size=np.array(sizes, dtype=np.int32))
     counts = {l: labels.count(l) for l in sorted(set(labels))}
     print(f"\nwrote {args.out}: {len(clips)} clips {counts}")
 

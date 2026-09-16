@@ -19,14 +19,25 @@ space, so a flipped frame reports a right hand as "Left", and features.canonical
 would then mirror exactly the hands it should leave alone. Pixel coordinates are mirrored at
 draw time instead, which is the only place the mirror belongs.
 
+Numbers mode (--mode digits, or the M key while running) swaps in the 10-class digit forest
+(temporal/model_digits.p, feature static/v4) with the vote constants in
+thresholds.DIGITS_OVERRIDES, no motion model and the launch gates disarmed -- a '1' is the Z
+launch pose, and a track armed off it would park the machine in TRACKING where nothing
+static is ever voted. The Segmenter is rebuilt on every toggle rather than having its fields
+swapped, so a parked D cannot be delivered as a digit and a last-emitted O cannot suppress a
+0. That forest was trained on 218 signers of a public photo set and never on this project's
+author; the overlay says so for as long as the mode is on.
+
 Usage
 -----
     ./.venv/bin/python temporal/live_demo.py --camera 0
     ./.venv/bin/python temporal/live_demo.py --thresholds temporal/thresholds_mycam.json
     ./.venv/bin/python temporal/live_demo.py --no-motion
+    ./.venv/bin/python temporal/live_demo.py --mode digits
 
-Keys: Q or ESC quits, C clears the output string, SPACE prints the current signal
-values (state, v_bar, sigma, gate fractions, fps) to stdout so a moment can be quoted exactly.
+Keys: Q or ESC quits, C clears the output string, M toggles letters / numbers, SPACE prints
+the current signal values (state, v_bar, sigma, sigma_rigid, gate fractions, fps) to stdout
+so a moment can be quoted exactly.
 """
 import argparse
 import os
@@ -34,6 +45,7 @@ import pickle
 import sys
 import time
 from collections import deque
+from dataclasses import replace
 
 import cv2
 import mediapipe as mp
@@ -42,11 +54,20 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
 from segmenter import Segmenter, TRACKING, HOLD, SETTLING, NO_HAND
-from thresholds import Thresholds, DEFAULT, NEEDS_GESTURE_DATA
+from thresholds import Thresholds, DEFAULT, NEEDS_GESTURE_DATA, DIGITS_OVERRIDES
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_MODEL = os.path.join(HERE, "model_static.p")
 MOTION_MODEL = os.path.join(HERE, "model_motion.p")
+DIGITS_MODEL = os.path.join(HERE, "model_digits.p")
+#: The feature tag both shipped forests are trained on (112-D): the letter forest and the
+#: digit forest (train_digits.py SHIP_FEATURE; it was measured and shipped on static/v4, not
+#: the static/v3 first planned for it). Any tag in features.STATIC_FEATURES is accepted -- the
+#: segmenter builds the vector the pickle names -- but a forest on another tag is called out
+#: at startup, so the note below fires only when a pickle genuinely differs from what ships.
+LETTERS_TAG = "static/v4"
+DIGITS_TAG = "static/v4"
+DIGITS_NOTE = "NUMBERS 0-9: J/Z off; trained on 218 signers from a public dataset, not on you"
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 #: The display copy is resampled to this width before anything is drawn, so the overlay has one
@@ -65,6 +86,28 @@ def load_model(path):
     if isinstance(blob, dict):
         return blob["model"], list(blob.get("classes", [])) or None, blob
     return blob, None, {}
+
+
+def load_static(path, what, expect_tag):
+    """A static forest plus the feature tag its pickle names, checked against the registry.
+
+    The old check compared the tag to one hard-coded string; with two static forests on two
+    layouts the registry is the check, and the tag is handed to the Segmenter so the vector it
+    builds is the one the forest was fitted on (it also verifies the width against the
+    estimator). A pickle with no tag is the original static/v3.
+    """
+    model, classes, blob = load_model(path)
+    tag = blob.get("feature") or F.DEFAULT_STATIC_TAG
+    if tag not in F.STATIC_FEATURES:
+        raise SystemExit(f"{path} was trained on feature {tag!r}, which this build cannot "
+                         f"compute (known: {sorted(F.STATIC_FEATURES)}); retrain before "
+                         "running live")
+    dim = F.STATIC_FEATURES[tag][1]
+    print(f"{what} model: {len(classes or [])} classes, {blob.get('n_train', '?')} training "
+          f"rows, feature {tag} ({dim}-D)")
+    if tag != expect_tag:
+        print(f"  note: the shipped {what} forest is {expect_tag}; this pickle is {tag}")
+    return model, classes, tag
 
 
 def text(img, s, x, y, color=(255, 255, 255), scale=0.5, thick=1):
@@ -94,12 +137,14 @@ def draw_hand(img, pts, color=(200, 200, 200)):
         cv2.circle(img, p, 2, color, -1, cv2.LINE_AA)
 
 
-def draw_overlay(img, seg, th, fps, letters, out_str, jf, zf, track, note):
+def draw_overlay(img, seg, th, fps, letters, out_str, jf, zf, track, note, mode="letters"):
     W = img.shape[1]
     cv2.rectangle(img, (0, 0), (W, 132), (18, 18, 18), -1)
     color = STATE_COLOR.get(seg.state, (255, 255, 255))
     text(img, seg.state, 12, 26, color, 0.8, 2)
     text(img, f"{fps:5.1f} fps", W - 110, 26, (200, 200, 200), 0.6, 1)
+    if mode == "digits":
+        text(img, "NUMBERS", W - 260, 26, (0, 165, 255), 0.7, 2)
 
     text(img, f"v_bar {seg.v_bar:5.2f}", 12, 52, (255, 255, 255))
     meter(img, 130, 40, 220, 14, seg.v_bar, max(th.V_MOVE_UNARMED * 1.5, 3.0),
@@ -108,16 +153,27 @@ def draw_overlay(img, seg, th, fps, letters, out_str, jf, zf, track, note):
     text(img, f"still<{th.V_STILL:.2f}  armed>{th.V_MOVE_ARMED:.2f}  free>{th.V_MOVE_UNARMED:.2f}",
          362, 52, (170, 170, 170), 0.42)
 
+    # Two meters for two signals. Stability (SHAPE_STABLE) reads the plain sigma; the rigidity
+    # veto reads the ROTATION-ALIGNED sigma_rigid, and drawing the veto tick on the plain
+    # meter showed a bar near the red line while no veto was close (plain sigma exceeds
+    # RIGID_VETO on 25 frames of the committed takes, sigma_rigid on 9).
     text(img, f"sigma {seg.sigma:5.3f}", 12, 76, (255, 255, 255))
-    meter(img, 130, 64, 220, 14, seg.sigma, max(th.RIGID_VETO * 1.5, 0.3),
-          [(th.SHAPE_STABLE, (0, 255, 0)), (th.RIGID_VETO, (0, 0, 255))], (255, 180, 60))
-    text(img, f"stable<{th.SHAPE_STABLE:.2f}  veto>{th.RIGID_VETO:.2f}",
-         362, 76, (170, 170, 170), 0.42)
+    meter(img, 130, 64, 170, 14, seg.sigma, max(th.SHAPE_STABLE * 3.0, 0.3),
+          [(th.SHAPE_STABLE, (0, 255, 0))], (255, 180, 60))
+    text(img, f"stable<{th.SHAPE_STABLE:.2f}", 312, 76, (170, 170, 170), 0.42)
+    text(img, f"rigid {seg.sigma_rigid:5.3f}", 440, 76, (255, 255, 255))
+    meter(img, 560, 64, 170, 14, seg.sigma_rigid, max(th.RIGID_VETO * 1.5, 0.3),
+          [(th.RIGID_VETO, (0, 0, 255))], (255, 180, 60))
+    text(img, f"veto>{th.RIGID_VETO:.2f}", 742, 76, (170, 170, 170), 0.42)
 
     armed = seg._arm if seg.state == TRACKING else None
     ready = "J" if jf >= th.GATE_ARM_FRAC and jf >= zf else ("Z" if zf >= th.GATE_ARM_FRAC else None)
-    tag = f"ARMED {armed}" if armed else (f"gate ready {ready}" if ready else "gate none")
-    tcol = (0, 128, 255) if armed else ((0, 255, 0) if ready else (140, 140, 140))
+    if not seg.arm_gates:
+        tag = "gates off (numbers)"
+    else:
+        tag = f"ARMED {armed}" if armed else (f"gate ready {ready}" if ready else "gate none")
+    tcol = (0, 128, 255) if armed else ((0, 255, 0) if ready and seg.arm_gates
+                                        else (140, 140, 140))
     text(img, f"gate J {jf:.2f}   Z {zf:.2f}   arm>={th.GATE_ARM_FRAC:.2f}", 12, 100,
          (255, 255, 255))
     text(img, tag, 330, 100, tcol, 0.6, 2)
@@ -148,6 +204,9 @@ def main():
                     help="JSON written by Thresholds.to_json (see temporal/calibrate.py)")
     ap.add_argument("--no-motion", action="store_true",
                     help="run the static branch alone; the J/Z tracker still shows on the overlay")
+    ap.add_argument("--mode", choices=("letters", "digits"), default="letters",
+                    help="start in letters (24 static + J/Z) or numbers (0-9, gates off); the M "
+                         "key toggles while running")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480,
                     help="640x480 is requested by default: shorter exposure means less motion "
@@ -171,12 +230,16 @@ def main():
 
     if not os.path.exists(STATIC_MODEL):
         raise SystemExit(f"{STATIC_MODEL} not found; run temporal/train_static.py first")
-    static_model, static_classes, blob = load_model(STATIC_MODEL)
-    if blob.get("feature") not in (None, "static/v3"):
-        raise SystemExit(f"{STATIC_MODEL} was trained on feature {blob['feature']!r}, but the "
-                         "segmenter feeds shape84/v1; retrain before running live")
-    print(f"static model: {len(static_classes or [])} classes, "
-          f"{blob.get('n_train', '?')} training frames")
+    static_model, static_classes, static_tag = load_static(STATIC_MODEL, "static", LETTERS_TAG)
+
+    digits = None
+    if os.path.exists(DIGITS_MODEL):
+        digits = load_static(DIGITS_MODEL, "digits", DIGITS_TAG)
+    elif args.mode == "digits":
+        raise SystemExit(f"{DIGITS_MODEL} not found; numbers mode needs it (temporal/"
+                         "train_digits.py writes it)")
+    else:
+        print(f"no {os.path.basename(DIGITS_MODEL)}: the M key (numbers mode) is disabled")
 
     # One standing line on the overlay, so the reason J is unreachable is on screen and not
     # only in the startup log the user scrolled past.
@@ -243,8 +306,24 @@ def main():
         _logf.write(_json.dumps({"kind": "hold", **h}) + "\n")
         _logf.flush()
 
-    seg = Segmenter(th, static_model, motion_model, static_classes, motion_classes,
-                    on_event=_log_span, on_hold=_log_hold)
+    def build_segmenter(mode):
+        """A fresh Segmenter for the mode. Numbers: the digit forest, DIGITS_OVERRIDES on the
+        vote, no motion model, gates disarmed. Rebuilt whole so no parked letter, cooldown or
+        last_emitted crosses from one mode into the other."""
+        if mode == "digits":
+            d_model, d_classes, d_tag = digits
+            return Segmenter(replace(th, **DIGITS_OVERRIDES), d_model, None, d_classes, None,
+                             on_event=_log_span, on_hold=_log_hold, static_feature_tag=d_tag,
+                             arm_gates=False)
+        return Segmenter(th, static_model, motion_model, static_classes, motion_classes,
+                         on_event=_log_span, on_hold=_log_hold, static_feature_tag=static_tag)
+
+    mode = args.mode
+    seg = build_segmenter(mode)
+    letters_note = note
+    if mode == "digits":
+        note = DIGITS_NOTE
+        print(f"numbers mode: {DIGITS_NOTE}")
     letters, out_str = [], ""
     frame_times = deque(maxlen=30)
     # Normalized landmarks, kept here rather than read back out of the segmenter: its buffer
@@ -316,7 +395,7 @@ def main():
 
             fps = (len(frame_times) - 1) / max(frame_times[-1] - frame_times[0], 1e-6) \
                 if len(frame_times) > 1 else 0.0
-            draw_overlay(disp, seg, th, fps, letters, out_str, jf, zf, track, note)
+            draw_overlay(disp, seg, seg.th, fps, letters, out_str, jf, zf, track, note, mode)
             cv2.imshow("live_demo", disp)
 
             k = cv2.waitKey(1) & 0xFF
@@ -324,9 +403,18 @@ def main():
                 break
             if k == ord("c"):
                 letters, out_str = [], ""
+            if k == ord("m"):
+                if digits is None:
+                    print(f"numbers mode needs {DIGITS_MODEL}; staying in letters")
+                else:
+                    mode = "digits" if mode == "letters" else "letters"
+                    seg = build_segmenter(mode)
+                    note = DIGITS_NOTE if mode == "digits" else letters_note
+                    print(f"mode: {mode}" + (f" -- {DIGITS_NOTE}" if mode == "digits" else ""))
             if k == ord(" "):
-                print(f"v_bar={seg.v_bar:.3f} sigma={seg.sigma:.3f} state={seg.state} "
-                      f"jf={jf:.2f} zf={zf:.2f} fps={fps:.1f}")
+                print(f"v_bar={seg.v_bar:.3f} sigma={seg.sigma:.3f} "
+                      f"sigma_rigid={seg.sigma_rigid:.3f} state={seg.state} "
+                      f"jf={jf:.2f} zf={zf:.2f} fps={fps:.1f} mode={mode}")
 
     cap.release()
     cv2.destroyAllWindows()

@@ -7,19 +7,28 @@ the next person measures the drop as a data problem. These tests make that edit 
 
 Two kinds of assertion live here, and they are not equally strong:
 
-  PROPERTIES are derived from the design and hold for any correct implementation -- 42 and 79
-  dimensions, exact invariance of shape42 to translation and to uniform rescale, the gate
-  truth table, the arm flag at [78], to_isotropic touching only x. These say the code is right.
+  PROPERTIES are derived from the design and hold for any correct implementation -- 42, 101,
+  112 and 79 dimensions, exact invariance of shape42 and of the static/v4 thumb block to
+  translation and to uniform rescale, the gate truth table, the arm flag at [78], to_isotropic
+  touching only x. These say the code is right.
 
   PINNED VALUES are numbers this implementation produces today, recorded so drift is visible.
   They do not say the code is right; they say it has not changed. Where a pinned number is
   independently derivable from the fixture geometry the derivation is written beside it, and
   those few are properties in disguise.
 
-The three fixture hands are constructed, not captured. Each finger tip is placed at an exact
-chosen distance from the wrist in palm units, so extension_ratios comes back as the round
-number it was built from and the gate inequalities are exercised at known distances from their
-thresholds rather than at whatever a recorded frame happened to give.
+The fixture hands are constructed, not captured. Each finger tip is placed at an exact chosen
+distance from the wrist in palm units, so extension_ratios comes back as the round number it
+was built from and the gate inequalities are exercised at known distances from their
+thresholds rather than at whatever a recorded frame happened to give. build_hand places the
+joints by linear interpolation, so every finger it builds is exactly straight (straightness
+1.0); the hooked-index fixture bends the joints by hand, because z_gate's straightness clause
+can only be exercised by a finger that is not straight.
+
+The last section drives the Segmenter itself with a stub forest: a static letter must reach
+the emission block and come out (the block once raised NameError on every static emission
+while every test stayed green, because nothing here ever voted), and arm_gates=False must
+keep a carried launch pose out of TRACKING.
 """
 import os
 import sys
@@ -29,6 +38,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import features as F
+from segmenter import Segmenter, TRACKING, HOLD
+from thresholds import DEFAULT
 
 
 # ---------------------------------------------------------------- fixture hands
@@ -71,15 +82,42 @@ def build_hand(ratios, thumb_tip):
 #: written with the wrong inequality direction would fail.
 FLAT = build_hand({f: 2.20 for f in FINGERS}, (-0.90, 1.20))
 
-#: The I handshape, the J launch pose. Pinky at 1.75 clears J_GATE's 1.50; the other three at
+#: The I handshape, the J launch pose. Pinky at 1.75 clears j_gate's 1.50; the other three at
 #: 1.00 clear its 1.30 ceiling; the thumb tucked to the palm gives thumb_pinkymcp 0.353 against
-#: a 1.15 ceiling. Index at 1.00 keeps it far below Z_GATE's 1.80.
+#: the J_THUMB_MAX ceiling of 1.30. Its straight index (1.0) would pass z_gate's straightness
+#: clause, so z_gate rejects it on the pinky (1.75 against the 1.20 ceiling on the others).
 I_SHAPE = build_hand({"index": 1.00, "mid": 1.00, "ring": 1.00, "pinky": 1.75}, (0.10, 0.90))
 
-#: The D handshape, the Z launch pose. Index at 2.10 clears Z_GATE's 1.80, the other three at
-#: 1.00 clear its 1.20 ceiling, thumb extension 1.265 sits under its 1.45. Pinky at 1.00 keeps
-#: it below J_GATE's 1.50 floor.
+#: The D handshape, the Z launch pose. z_gate tests the index by STRAIGHTNESS (> 0.90, so a
+#: finger pointing at the lens still passes), and build_hand's linear joints make it exactly
+#: 1.0; the other three at 1.00 clear the 1.20 ceiling, thumb extension 1.265 sits under its
+#: 1.45. Pinky at 1.00 keeps it below j_gate's 1.50 floor.
 D_SHAPE = build_hand({"index": 2.10, "mid": 1.00, "ring": 1.00, "pinky": 1.00}, (-0.10, 1.30))
+
+
+def hook_index(P, bone=0.45):
+    """D_SHAPE with its index bent into a hook: three equal bones up, across and back down, so
+    |tip - MCP| is one bone against three (straightness 1/3). Every other landmark, and so
+    every other clause of z_gate, is untouched -- only the straightness clause can fail."""
+    Q = P.copy()
+    mcp = Q[5]
+    Q[6] = mcp + np.array([0.0, bone])
+    Q[7] = Q[6] + np.array([bone, 0.0])
+    Q[8] = Q[7] + np.array([0.0, -bone])
+    return Q
+
+
+#: The X handshape: a hooked index with everything else as in D. Fails z_gate ONLY on
+#: straightness; a z_gate that dropped that clause would admit it.
+X_SHAPE = hook_index(D_SHAPE)
+
+
+def with_thumb_pinkymcp(P, ratio):
+    """I_SHAPE with the thumb tip moved so thumb_pinkymcp reads exactly `ratio` (the thumb is
+    slid along the MCP row away from the pinky MCP), for probing the J_THUMB_MAX ceiling."""
+    Q = P.copy()
+    Q[4] = Q[17] + np.array([-ratio * PALM_S, 0.0])
+    return Q
 
 TOL = 1e-9
 
@@ -215,15 +253,43 @@ def test_gate_truth_table():
     assert bool(F.j_gate(I_SHAPE)) is True
     assert bool(F.j_gate(D_SHAPE)) is False
     assert bool(F.j_gate(FLAT)) is False
+    assert bool(F.j_gate(X_SHAPE)) is False
     assert bool(F.z_gate(D_SHAPE)) is True
     assert bool(F.z_gate(I_SHAPE)) is False
     assert bool(F.z_gate(FLAT)) is False
 
     # Vectorized over a batch, because the segmenter calls these per frame but calibrate and
     # the archive sweeps call them on whole (T,21,2) stacks.
-    stack = np.stack([FLAT, I_SHAPE, D_SHAPE])
-    assert list(F.j_gate(stack)) == [False, True, False]
-    assert list(F.z_gate(stack)) == [False, False, True]
+    stack = np.stack([FLAT, I_SHAPE, D_SHAPE, X_SHAPE])
+    assert list(F.j_gate(stack)) == [False, True, False, False]
+    assert list(F.z_gate(stack)) == [False, False, True, False]
+
+
+def test_z_gate_straightness_clause():
+    """A hooked index fails z_gate on straightness alone. Every straight-finger fixture passes
+    the clause trivially (straightness 1.0), so without this hand a z_gate that dropped the
+    test would still pass the truth table."""
+    assert close(F.finger_straightness(D_SHAPE, "index"), 1.0) < TOL
+    st = float(F.finger_straightness(X_SHAPE, "index"))
+    assert close(st, 1.0 / 3.0) < TOL, st
+    # Only the index changed: the other clauses read exactly as they do for D.
+    e_d, e_x = F.extension_ratios(D_SHAPE), F.extension_ratios(X_SHAPE)
+    for k in ("thumb", "mid", "ring", "pinky"):
+        assert close(e_d[k], e_x[k]) < TOL, k
+    assert bool(F.z_gate(X_SHAPE)) is False
+    assert bool(F.z_gate(D_SHAPE)) is True
+
+
+def test_j_gate_thumb_ceiling():
+    """j_gate's thumb clause is thumb_pinkymcp < J_THUMB_MAX, and the constant is 1.30: measured
+    on the prompted takes, 1.20 lost 13 of 60 J items at the gate and 1.30 admits 13 of 2,278
+    other archive frames (all Y) that start no track. The value is pinned so a change to it is
+    a deliberate, re-measured one."""
+    assert F.J_THUMB_MAX == 1.30, F.J_THUMB_MAX
+    for ratio, expect in ((1.25, True), (1.35, False)):
+        Q = with_thumb_pinkymcp(I_SHAPE, ratio)
+        assert close(F.thumb_pinkymcp(Q), ratio) < TOL
+        assert bool(F.j_gate(Q)) is expect, (ratio, expect)
 
 
 def test_gates_are_scale_and_translation_invariant():
@@ -234,6 +300,68 @@ def test_gates_are_scale_and_translation_invariant():
             Q = P.mean(axis=0) + (P - P.mean(axis=0)) * k + np.array([5.0, -2.0])
             assert bool(F.j_gate(Q)) is j, (k, "j")
             assert bool(F.z_gate(Q)) is z, (k, "z")
+
+
+def test_static_feature_dims_and_registry():
+    """static/v3 is 101-D and unchanged; static/v4 is v3 followed by the 11-value thumb block.
+    The registry is what every consumer resolves a model's feature tag through, so its keys,
+    functions and widths are part of the contract, as is None meaning v3."""
+    assert F.STATIC_DIM == 101 and F.STATIC_DIM_V4 == 112
+    for P in (FLAT, I_SHAPE, D_SHAPE, X_SHAPE):
+        v3, v4 = F.static_feature(P), F.static_feature_v4(P)
+        assert v3.shape == (101,) and v4.shape == (112,)
+        assert close(v4[:101], v3) == 0.0, "v4 must begin with v3 bit for bit"
+        assert np.isfinite(v4).all()
+    stack = np.stack([FLAT, I_SHAPE, D_SHAPE])
+    assert F.static_feature_v4(stack).shape == (3, 112)
+    assert close(F.static_feature_v4(stack)[1], F.static_feature_v4(I_SHAPE)) < 1e-12
+
+    assert set(F.STATIC_FEATURES) == {"static/v3", "static/v4"}, sorted(F.STATIC_FEATURES)
+    assert F.STATIC_FEATURES["static/v3"] == (F.static_feature, 101)
+    assert F.STATIC_FEATURES["static/v4"] == (F.static_feature_v4, 112)
+    assert F.static_feature_for(None) == (F.static_feature, 101)
+    assert F.static_feature_for("static/v4")[1] == 112
+    try:
+        F.static_feature_for("static/v0")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown tag must raise, not fall back to some layout")
+
+
+def test_static_feature_v4_block_layout():
+    """The thumb block, in the order docs/features.js reproduces: [101] thumb straightness,
+    [102:107] tips 4, 8, 12, 16, 20 to the palm center, [107:112] thumb tip to landmarks
+    6, 7, 10, 11, 3 -- all over palm_scale. Derivable on the fixtures: build_hand lays the
+    thumb joints on one line, so straightness is exactly 1.0; the pinky tip of I_SHAPE sits at
+    (0.45, h) with h = sqrt((1.75 S)^2 - 0.45^2) and the palm center at (0, 0.8)."""
+    v = F.static_feature_v4(I_SHAPE)
+    assert close(v[101], 1.0) < TOL, v[101]
+    h = np.sqrt((1.75 * PALM_S) ** 2 - 0.45 ** 2)
+    assert close(v[106], np.hypot(0.45, h - 0.8) / PALM_S) < TOL, v[106]
+    assert close(v[102], np.linalg.norm(I_SHAPE[4] - np.array([0.0, 0.8])) / PALM_S) < TOL
+    for k, j in enumerate((6, 7, 10, 11, 3)):
+        assert close(v[107 + k], np.linalg.norm(I_SHAPE[4] - I_SHAPE[j]) / PALM_S) < TOL, j
+    assert F.THUMB_TARGETS == (6, 7, 10, 11, 3) and F.THUMB_CHAIN == (1, 2, 3, 4)
+    # The block is not degenerate: the hooked index moves the thumb-to-index-PIP/DIP entries.
+    assert close(F.static_feature_v4(X_SHAPE)[107:109], v[107:109]) > 0.05
+
+
+def test_static_feature_v4_translation_and_scale_invariant():
+    """Every entry of the block is a ratio of distances between landmarks to palm_scale, so
+    carrying the hand or standing closer to the camera must leave all 112 values unchanged --
+    the same property the whole scale fix rests on, asserted on the new block explicitly."""
+    for P in (FLAT, I_SHAPE, D_SHAPE, X_SHAPE):
+        base = F.static_feature_v4(P)
+        for d in ([0.3, -0.7], [-12.0, 4.5], [1e3, 1e3]):
+            assert close(F.static_feature_v4(P + np.array(d))[101:], base[101:]) < TOL
+            assert close(F.static_feature_v4(P + np.array(d)), base) < TOL
+        centroid = P.mean(axis=0)
+        for k in (0.25, 0.5, 0.7, 0.85, 1.2, 2.0, 7.0):
+            scaled = centroid + (P - centroid) * k + np.array([1.0, -2.0])
+            got = F.static_feature_v4(scaled)
+            assert close(got[101:], base[101:]) < TOL, (k, close(got[101:], base[101:]))
+            assert close(got, base) < TOL, k
 
 
 def test_to_isotropic():
@@ -387,11 +515,11 @@ def test_rolling_sigma_window_is_trailing():
 def test_event_rigidity_uses_the_trailing_window():
     """[59]/[60] must come from rolling_shape_sigma, not from a whole-clip reference.
 
-    event_features says these are directly comparable to RIGID_VETO, which the segmenter
-    applies to the trailing-window signal. The rigid fixtures elsewhere in this file cannot
-    catch a swap to shape_sigma -- both definitions give exactly zero on a hand that never
-    reshapes. On a steadily reshaping hand they differ by more than a factor of two, so a
-    veto calibrated on one and fed the other rejects events the segmenter would have kept.
+    They are the plain trailing-window sigma, the segmenter's stability signal (the runtime
+    veto reads the rotation-aligned one; event_features says so). The rigid fixtures elsewhere
+    in this file cannot catch a swap to shape_sigma -- both definitions give exactly zero on a
+    hand that never reshapes. On a steadily reshaping hand they differ by more than a factor of
+    two, so a forest trained on one and fed the other reads a different quantity.
     """
     times = np.linspace(0.0, 1.0, 21)
     morph = np.stack([build_hand({"index": 1.0 + 1.1 * u, "mid": 1.0, "ring": 1.0,
@@ -419,6 +547,167 @@ def test_resample_arclength_removes_speed():
     assert a.shape == (16, 2)
     assert close(a, b) < 1e-12
     assert close(F.path_length(a), np.hypot(2.0, 1.0)) < 1e-12
+
+
+# ---------------------------------------------------------------- segmenter contract
+
+class _StubForest:
+    """A forest that always answers `winner` with probability 1.0. Enough to drive the static
+    branch end to end; the letters are whatever static_classes names them."""
+
+    def __init__(self, n_classes, winner, dim):
+        self.n_classes, self.winner, self.n_features_in_ = n_classes, winner, dim
+
+    def predict_proba(self, X):
+        X = np.asarray(X)
+        assert X.shape[1] == self.n_features_in_, X.shape
+        p = np.zeros((len(X), self.n_classes))
+        p[:, self.winner] = 1.0
+        return p
+
+
+def _stream(seg, frames, W=1280, H=720):
+    """Drive a segmenter over [(t, P_or_None)] of ISOTROPIC canonical hands; returns the
+    emissions and the set of states visited. The fixtures are already isotropic, so they are
+    handed over as if the frame were square and W/H = 1 -- the caller passes W == H."""
+    ems, states = [], set()
+    for t, P in frames:
+        lm = None if P is None else np.concatenate([P, np.zeros((21, 1))], axis=1)
+        em = seg.step(t, lm, None, W, W)
+        states.add(seg.state)
+        if em is not None:
+            ems.append(em)
+    return ems, states
+
+
+def _hold(P, t0, seconds, fps=30):
+    return [(t0 + k / fps, P) for k in range(int(seconds * fps))]
+
+
+def _carry(P, t0, seconds, palm_per_s, fps=30):
+    """P translated at a steady palm_per_s along +x: v_bar reads exactly palm_per_s and the
+    rotation-aligned sigma stays 0, so nothing but the rising edge and the gates decide."""
+    out = []
+    for k in range(int(seconds * fps)):
+        out.append((t0 + k / fps, P + np.array([palm_per_s * PALM_S * k / fps, 0.0])))
+    return out
+
+
+def test_segmenter_static_emission_reaches_the_output():
+    """A held letter votes, passes the gate and is emitted exactly once, carrying the whole
+    vote in detail['probs']. This is the regression for the NameError that shipped in the
+    emission block: no Python test ever built a Segmenter with a static model, so an edit
+    that broke every static letter left all 35 tests green."""
+    classes = list("ABCDEFGHIKLMNOPQRSTUVWXY")
+    forest = _StubForest(len(classes), classes.index("B"), F.STATIC_DIM_V4)
+    seg = Segmenter(DEFAULT, static_model=forest, static_classes=classes,
+                    static_feature_tag="static/v4")
+    ems, states = _stream(seg, _hold(FLAT, 0.0, 2.0))
+    assert HOLD in states
+    assert [e.letter for e in ems] == ["B"], [e.letter for e in ems]
+    assert ems[0].kind == "static" and ems[0].confidence == 1.0
+    assert len(ems[0].detail["probs"]) == len(classes) and ems[0].detail["agree"] == 1.0
+    # A deferred letter (I is a launch pose) is parked for D_WAIT and then delivered once.
+    forest = _StubForest(len(classes), classes.index("I"), F.STATIC_DIM_V4)
+    seg = Segmenter(DEFAULT, static_model=forest, static_classes=classes,
+                    static_feature_tag="static/v4")
+    ems, _ = _stream(seg, _hold(I_SHAPE, 0.0, 2.0))
+    assert [e.letter for e in ems] == ["I"], [e.letter for e in ems]
+    # The feature the forest is fed is the one its tag names: a v4-tagged stub fed by a v3
+    # segmenter would have been handed 101 values and asserted above.
+    assert seg.static_feature_tag == "static/v4"
+
+
+def test_segmenter_arm_gates_off_never_tracks():
+    """A parked launch pose that then moves arms a track by design; with arm_gates=False (the
+    numbers mode, where '1' is the Z launch pose) the same stream must never enter TRACKING
+    and must still emit its static letter."""
+    classes = list("0123456789")
+    forest = _StubForest(len(classes), 1, F.STATIC_DIM)
+    frames = _hold(D_SHAPE, 0.0, 1.2) + _carry(D_SHAPE, 1.2, 0.5, 2.5) \
+        + _hold(D_SHAPE + np.array([2.5 * PALM_S * 0.5, 0.0]), 1.7, 1.2)
+    seg_on = Segmenter(DEFAULT, static_model=forest, static_classes=classes)
+    _, states_on = _stream(seg_on, frames)
+    assert TRACKING in states_on, "the carried D must arm a Z track with the gates on"
+    seg_off = Segmenter(DEFAULT, static_model=forest, static_classes=classes, arm_gates=False)
+    ems, states_off = _stream(seg_off, frames)
+    assert TRACKING not in states_off, sorted(states_off)
+    assert [e.letter for e in ems] == ["1"], [e.letter for e in ems]
+
+
+def _hook(P, t0, seconds, radius_palm, fps=30):
+    """The whole hand carried along a half circle of `radius_palm` palm widths in `seconds`:
+    tip path pi*r, net 2r (straightness 0.64), rotation-aligned sigma 0. With r 1.5 over
+    0.6 s the speed is ~7.9 palm/s, well over V_MOVE_ARMED, and the path clears L_MIN."""
+    n = int(seconds * fps)
+    out = []
+    for k in range(n):
+        a = np.pi * k / (n - 1)
+        off = np.array([radius_palm * PALM_S * (1 - np.cos(a)), radius_palm * PALM_S * np.sin(a)])
+        out.append((t0 + k / fps, P + off))
+    return out
+
+
+def _i_then_j(stroke_at):
+    """Park in I from t=0, start a J hook at `stroke_at`, then hold the finishing pose. Both
+    forests are stubs (I at 1.0, J at 1.0), so only the state machine decides the string.
+    Returns (letters, I vote time, its D_WAIT deadline, the time the track armed)."""
+    classes = list("ABCDEFGHIKLMNOPQRSTUVWXY")
+    seg = Segmenter(DEFAULT, static_model=_StubForest(24, classes.index("I"), F.STATIC_DIM_V4),
+                    motion_model=_StubForest(3, 0, F.EVENT_DIM), static_classes=classes,
+                    motion_classes=["J", "Z", "MOVE"], static_feature_tag="static/v4")
+    frames = _hold(I_SHAPE, 0.0, stroke_at) + _hook(I_SHAPE, stroke_at, 0.6, 1.5)
+    frames += _hold(frames[-1][1], frames[-1][0] + 1 / 30, 1.5)
+    letters, vote_t, deadline, arm_t, prev = [], None, None, None, None
+    for t, P in frames:
+        em = seg.step(t, np.concatenate([P, np.zeros((21, 1))], axis=1), None, 1280, 1280)
+        if seg._pending is not None and vote_t is None:
+            vote_t, deadline = seg._pending.t, seg._pending_until
+        if seg.state == TRACKING and prev != TRACKING and arm_t is None:
+            arm_t = t
+        prev = seg.state
+        if em is not None:
+            letters.append(em.letter)
+    assert vote_t is not None and arm_t is not None, (letters, vote_t, arm_t)
+    return "".join(letters), vote_t, deadline, arm_t
+
+
+def test_segmenter_pending_launch_letter_waits_for_the_arm_decision():
+    """The PENDING LAUNCH LETTER rule at its three timings (segmenter.py docstring):
+    a J whose track ARMS inside D_WAIT cancels the parked I ('J'); a J whose RISE began
+    inside D_WAIT but whose V_MOVE_ARMED_SUSTAIN elapses after the deadline is held too, so
+    the arm decision and not the timer settles it ('J', the gray zone that read 'IJ'); an I
+    held well past D_WAIT before the stroke is released by the timer, by design ('IJ')."""
+    th = DEFAULT
+    s, vote_t, deadline, arm_t = _i_then_j(0.45)
+    assert arm_t < deadline, (arm_t, deadline)
+    assert s == "J", s
+    s, vote_t, deadline, arm_t = _i_then_j(0.65)
+    # the positive control for the gray zone: the arm lands after the deadline but within
+    # one sustain (plus the frame that finds the rise) of it
+    assert deadline <= arm_t <= deadline + th.V_MOVE_ARMED_SUSTAIN + 1 / 30 + 1e-9, (deadline, arm_t)
+    assert s == "J", s
+    s, vote_t, deadline, arm_t = _i_then_j(1.0)
+    assert arm_t > deadline + th.V_MOVE_ARMED_SUSTAIN + 1 / 30, (deadline, arm_t)
+    assert s == "IJ", s
+
+
+def test_segmenter_checks_the_feature_width():
+    """A forest fitted on 101 values must not be fed 112, and the tag must be a known one."""
+    forest = _StubForest(24, 0, F.STATIC_DIM)
+    try:
+        Segmenter(DEFAULT, static_model=forest, static_feature_tag="static/v4")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a 101-D forest under a static/v4 tag must be refused")
+    try:
+        Segmenter(DEFAULT, static_model=forest, static_feature_tag="static/v0")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown feature tag must be refused")
+    assert Segmenter(DEFAULT, static_model=forest).static_feature_tag == "static/v3"
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

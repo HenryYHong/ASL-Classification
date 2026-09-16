@@ -5,7 +5,7 @@ whole recorded clips.
 
 A recorded clip is 2.0 s and contains a lead-in, the gesture, and a settle. The runtime never
 sees anything like that -- Segmenter cuts an event from motion onset to motion offset, which is
-shorter, and rejects anything longer than T_MAX = 1.80 s outright. Train on whole clips and
+shorter, and rejects anything longer than T_MAX (2.10 s) outright. Train on whole clips and
 every training example is a shape the deployed system can never produce. The model would score
 well in cross-validation and recognize nothing in front of a camera, which is precisely the
 failure this repository already documents for Approach A.
@@ -42,6 +42,21 @@ DEFAULT_OUT = os.path.join(HERE, "events.npz")
 #: them is, by construction, motion that is not a letter.
 LABEL_TO_CLASS = {"J": "J", "Z": "Z", "NONE": "MOVE"}
 
+#: Group ids partition the split, so they must never collide across recordings. Every event
+#: takes its recording's index times GROUP_STRIDE plus, for a prompted take, the item index its
+#: onset fell in (ORPHAN_GID when it fell in no item). A per-clip recording is one group of its
+#: own (item 0). Per-clip ids used to be the bare index, so take 0's items 1..N shared ids with
+#: clips 1..N in a file that mixed the two recording modes and GroupKFold treated independent
+#: recordings as one group.
+GROUP_STRIDE, ORPHAN_GID = 1000, 999
+
+
+def group_id(recording_index, item_index=0):
+    """The clip_id (GroupKFold group) of an event from recording `recording_index`."""
+    if not (0 <= item_index < GROUP_STRIDE):
+        raise ValueError(f"item index {item_index} does not fit under GROUP_STRIDE={GROUP_STRIDE}")
+    return int(recording_index) * GROUP_STRIDE + int(item_index)
+
 
 def modal_handedness(labels, default="Right"):
     """Reduce the recorder's per-frame labels to one modal real label.
@@ -75,7 +90,14 @@ def frame_sizes(npz, n_clips, override=None):
 
 
 def harvest(clip, stamps, handed, th, width, height):
-    """Replay one clip and return every motion span the segmenter cuts from it."""
+    """Replay one clip and return every motion span the segmenter cuts from it.
+
+    Fed one modal handedness label per recording. The runtime is fed MediaPipe's per-frame
+    label, and the Segmenter's HANDEDNESS LATCH (segmenter.py) is what makes the two agree:
+    on the committed takes the raw per-frame label lost 6 of 113 gestures to single-frame
+    flips that this modal label never saw, and with the latch the per-frame replay credits
+    the same 85 items this cut does.
+    """
     spans = []
     seg = Segmenter(th, on_event=lambda ev: spans.append(ev))
     lr = modal_handedness(handed)
@@ -90,6 +112,106 @@ def harvest(clip, stamps, handed, th, width, height):
     return spans
 
 
+#: What to do with every span that is NOT an item's credited gesture.
+#:   "drop_unreachable"  (default) spans the runtime could never score -- aborted tracks and
+#:           spans the T/L/straightness vetoes reject -- are discarded; every reachable
+#:           non-credited span (a false start inside an item, a rest-phase move) is MOVE.
+#:           GroupKFold(5) on the S1 takes: J+Z recall at the operating point 0.940 with
+#:           2/27 false fires on reachable MOVE, against 0.910 and 2/27 when the unreachable
+#:           spans are kept as MOVE -- an aborted J labeled MOVE teaches the forest that a
+#:           J-shaped path can be nothing, and the runtime never shows it one.
+#:   "move"  every other span is a MOVE example (fragments, rest-phase, aborted, veto-failing)
+#:   "drop"  in-item fragments of a J/Z item are discarded as well; they are runtime-reachable,
+#:           so this trains against fewer of the negatives the runtime actually presents. A
+#:           near-miss (NONE) item's reachable spans are its negatives and stay MOVE under
+#:           every policy: they are the "moved, but did not sign the letter" footage the
+#:           recorder asks for (collect_motion.py --negatives), not fragments of a gesture.
+OTHER_POLICIES = ("move", "drop", "drop_unreachable")
+
+
+def span_geometry(sp, th):
+    """Duration, tip path and straightness of a span, plus whether _score would reach the
+    classifier with it (scored, T/L/straightness vetoes all passed)."""
+    P, times, arm = sp["P"], sp["times"], sp["arm"]
+    dur = float(times[-1] - times[0])
+    tip = P[:, F.TIP_FOR_ARM[arm], :]
+    S = float(np.median(F.palm_scale(P)))
+    L = F.path_length(tip) / S
+    net = float(np.linalg.norm(tip[-1] - tip[0])) / S
+    straight = net / L if L > 1e-9 else 1.0
+    reachable = (str(sp.get("reason", "scored")).startswith("scored")
+                 and th.T_MIN <= dur <= th.T_MAX
+                 and th.L_MIN <= L <= th.L_MAX
+                 and straight <= th.STRAIGHT_VETO)
+    return dur, L, straight, reachable
+
+
+def assign_continuous(spans, items, th, other="drop_unreachable"):
+    """Label the spans cut from one prompted take, ONE credited gesture per item.
+
+    A prompted J item routinely yields two or three spans -- a false start, the gesture, a
+    settle -- and labeling every span whose onset falls in the item as 'J' taught the
+    classifier that a 1.7-palm fragment is a J, which is what made the runtime emit "JJ".
+    The credited span is the longest (tip path) runtime-reachable span whose onset lies in
+    the item's park/go window and whose armed gate matches the letter. Every other span is
+    handled by `other` (see OTHER_POLICIES).
+
+    Returns a list of dicts: span, label, gid (the item index, one GROUP per item; 999 when
+    the onset lies in no item), credited, reachable. Rows with label None are dropped.
+    """
+    if other not in OTHER_POLICIES:
+        raise ValueError(f"other={other!r}; expected one of {OTHER_POLICIES}")
+    rows = []
+    for sp in spans:
+        t0 = float(sp["times"][0])
+        it = next((I for I in items if I["park"][0] <= t0 < I["rest"][1]), None)
+        dur, L, straight, reachable = span_geometry(sp, th)
+        if it is None:
+            phase, gid, letter = "none", ORPHAN_GID, None
+        elif t0 >= it["rest"][0]:
+            phase, gid, letter = "rest", it["index"], None
+        else:
+            phase, gid = "item", it["index"]
+            letter = it["label"] if it["label"] in ("J", "Z") else None
+        rows.append({"span": sp, "gid": gid, "phase": phase, "letter": letter, "L": L,
+                     "dur": dur, "reachable": reachable, "credited": False, "label": "MOVE"})
+    best = {}
+    for k, r in enumerate(rows):
+        if r["letter"] and r["reachable"] and r["span"]["arm"] == r["letter"]:
+            if r["gid"] not in best or r["L"] > rows[best[r["gid"]]]["L"]:
+                best[r["gid"]] = k
+    for k in best.values():
+        rows[k]["credited"] = True
+        rows[k]["label"] = rows[k]["letter"]
+    out = []
+    for r in rows:
+        if not r["credited"]:
+            # A fragment is a non-credited span of a J/Z item (r["letter"] set); a NONE item's
+            # spans have no letter to be a fragment of and are kept as MOVE.
+            if other == "drop" and ((r["phase"] == "item" and r["letter"]) or not r["reachable"]):
+                continue
+            if other == "drop_unreachable" and not r["reachable"]:
+                continue
+        out.append(r)
+    return out
+
+
+def clip_as_item(label, stamps):
+    """A per-clip recording (SPACE-driven collect_motion.py, or ingested footage) as a
+    one-item schedule covering the whole clip, so the per-clip branch labels through
+    assign_continuous exactly as a prompted take does: one credited runtime-reachable gesture
+    per clip under the matching gate, every other reachable span MOVE, aborted and
+    veto-failing spans dropped by the default policy, and `--other` honored. A NONE clip is
+    a near-miss item (letter None), so all of its reachable spans are MOVE. Before this the
+    per-clip branch kept every span harvest() returned -- abort:GAP / abort:T_MAX /
+    RIGID_VETO tracks and veto-failing spans included -- and labeled each J-armed one of a J
+    clip 'J', the population the CONTINUOUS relabel removed from the prompted takes.
+    """
+    t0, t1 = float(stamps[0]) - 1.0, float(stamps[-1]) + 1.0
+    return [{"label": label if label in ("J", "Z") else "NONE", "index": 0,
+             "park": [t0, t0], "go": [t0, t1], "rest": [t1, t1]}]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -97,6 +219,9 @@ def main():
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--thresholds", default=None, help="a Thresholds json from calibrate.py")
     ap.add_argument("--aspect", nargs=2, type=int, metavar=("W", "H"), default=None)
+    ap.add_argument("--other", default="drop_unreachable", choices=OTHER_POLICIES,
+                    help="what becomes of a prompted item's or a recorded clip's non-credited "
+                         "spans")
     args = ap.parse_args()
 
     if not os.path.exists(args.clips):
@@ -126,6 +251,7 @@ def main():
 
     X, y, clip_ids, sess_out, signer_out = [], [], [], [], []
     per_label = {}
+    per_take_frag = {}
     for i, (clip, ts, lab) in enumerate(zip(clips, stamps, labels)):
         lab = str(lab).strip().upper()
 
@@ -136,25 +262,20 @@ def main():
             # was moving and no letter was being signed, which is precisely a MOVE example.
             items = json.loads(str(prompts[i])) if str(prompts[i]) else []
             spans = harvest(np.asarray(clip), np.asarray(ts), handed[i], th, wh[i][0], wh[i][1])
-            got = Counter()
-            for sp in spans:
-                t0 = float(sp["times"][0])
-                it = next((I for I in items if I["park"][0] <= t0 < I["rest"][1]), None)
-                if it is None:
-                    use, gid = "MOVE", -1
-                elif t0 >= it["rest"][0] or it["label"] == "NONE":
-                    use, gid = "MOVE", it["index"]
-                else:
-                    use, gid = it["label"], it["index"]
-                    got[it["index"]] += 1
-                if use in ("J", "Z") and sp["arm"] != use:
-                    use = "MOVE"      # armed under the other gate; that is what runtime would score
+            rows = assign_continuous(spans, items, th, other=args.other)
+            got = Counter(r["gid"] for r in rows if r["credited"])
+            # Counted on the unfiltered view (other="move" keeps every span), so the number
+            # says what the policy cut rather than what survived it.
+            per_take_frag[i] = sum(1 for r in assign_continuous(spans, items, th, other="move")
+                                   if r["phase"] == "item" and r["letter"] and not r["credited"])
+            for r in rows:
+                sp = r["span"]
                 try:
                     feat = F.event_features(sp["times"], sp["P"], sp["arm"])
                 except ValueError:
                     continue
-                X.append(feat); y.append(use)
-                clip_ids.append(i * 1000 + (gid if gid >= 0 else 999))
+                X.append(feat); y.append(r["label"])
+                clip_ids.append(group_id(i, r["gid"]))
                 sess_out.append(str(sessions[i])); signer_out.append(str(signers[i]))
             for I in items:
                 if I["label"] in ("J", "Z"):
@@ -164,29 +285,29 @@ def main():
         cls = LABEL_TO_CLASS.get(lab)
         if cls is None:
             continue
+        # One recorded clip is one prompted item spanning the whole clip (clip_as_item), so
+        # the same rule labels it: one credited reachable gesture under the matching gate, a
+        # span armed under the other gate is MOVE (at runtime it would be scored under that
+        # arm, so the classifier had better have seen it), the policy handles the rest.
         spans = harvest(np.asarray(clip), np.asarray(ts), handed[i], th, wh[i][0], wh[i][1])
+        rows = assign_continuous(spans, clip_as_item(lab, ts), th, other=args.other)
         rec = per_label.setdefault(lab, Counter())
-        rec[len(spans)] += 1
+        rec[sum(r["credited"] for r in rows) if cls in ("J", "Z") else len(rows)] += 1
 
-        for s in spans:
-            if cls in ("J", "Z") and s["arm"] != cls:
-                # The gate that armed disagrees with what was being signed. Keep it as a
-                # negative rather than discarding: at runtime this same span would be scored
-                # under that arm, so the classifier had better have seen it.
-                use = "MOVE"
-            else:
-                use = cls
+        for r in rows:
+            sp = r["span"]
             try:
-                feat = F.event_features(s["times"], s["P"], s["arm"])
+                feat = F.event_features(sp["times"], sp["P"], sp["arm"])
             except ValueError:
                 continue
             X.append(feat)
-            y.append(use)
-            clip_ids.append(i)
+            y.append(r["label"])
+            clip_ids.append(group_id(i))
             sess_out.append(str(sessions[i]))
             signer_out.append(str(signers[i]))
 
-    print("events cut per clip, by recorded label:")
+    print("events cut per clip, by recorded label (J/Z: credited gestures per item or clip; "
+          "NONE: MOVE spans kept per clip):")
     for lab in sorted(per_label):
         dist = dict(sorted(per_label[lab].items()))
         n = sum(per_label[lab].values())
@@ -194,10 +315,13 @@ def main():
         note = ""
         if lab in ("J", "Z"):
             missed = per_label[lab].get(0, 0)
-            note = f"   {clean}/{n} gave exactly one event"
+            note = f"   {clean}/{n} credited with one event"
             if missed:
-                note += f"; {missed} gave NONE -- the runtime would have missed those too"
+                note += f"; {missed} gave NONE reachable -- the runtime would have missed those too"
         print(f"  {lab:5s} {dist}{note}")
+    if per_take_frag:
+        print(f"non-credited in-item spans (fragments) per take: {per_take_frag} "
+              f"-> policy --other={args.other}")
 
     if not X:
         print("\nno events were cut from any clip.")
@@ -211,7 +335,7 @@ def main():
                         session=np.array(sess_out), signer=np.array(signer_out),
                         feature=np.array("event/v1"))
     print(f"\nwrote {args.out}: {X.shape[0]} events x {X.shape[1]}-D from "
-          f"{len(set(clip_ids))} independent clips {dict(Counter(y))}")
+          f"GROUPS={len(set(clip_ids))} independent prompted items {dict(Counter(y))}")
     print("clip_id is stored so the split can partition by clip; never split these rows randomly.")
     return 0
 

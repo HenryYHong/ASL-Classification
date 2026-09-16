@@ -1,29 +1,27 @@
-/* Verify features.js against the golden vectors Python produced. Run: node web/test_features.mjs
+/* Verify features.js against the golden vectors Python produced. Run: node docs/test_features.mjs
+ *
+ * Each golden case names its forest (`model`: "static" by default, or "digits"), and the feature
+ * function checked for it is the one that forest's tag in models.json selects through
+ * STATIC_FEATURES: static/v4 (112-D) for both shipped forests, letters and digits. Cases
+ * tagged api "tasks" store the raw Tasks-API handedness label and go through app.js's
+ * swapTasksHandedness first, exactly as a live label does.
  *
  * Reading the two implementations and agreeing they look equivalent is not evidence -- every
  * expensive bug in this project was a silent divergence between two implementations that looked
  * equivalent. Only the numbers count.
  *
- * ONE SUBTLETY, AND IT IS NOT A FUDGE. golden.json stores its INPUT landmarks rounded to 6
- * decimals, but Python computed the stored OUTPUTS from the unrounded float32 originals. So no
- * implementation in any language can reproduce those outputs from those inputs to the file's
- * stated 1e-6: the Python itself, re-run on golden.json's own rounded landmarks, misses its own
- * stored values by up to 6.2e-6 on shape42 and 1.9e-5 on static_feature -- exactly the
- * deviations this port shows. Both feature blocks divide by the palm scale (~0.22 here), which
- * multiplies a 5e-7 input rounding by roughly 4.6x, and the distance block divides by it again.
- *
- * Rather than relax the tolerance to a number that happens to pass, each field is allowed the
- * quantization floor MEASURED for that case: the first-order bound on how far the feature can
- * move when every input coordinate shifts by up to half a rounding step. It is computed here by
- * finite differences, so it tracks the real sensitivity of the real function. A genuine port bug
- * -- a permuted feature order, a wrong divisor, an unmirrored hand -- moves a feature by 1e-1 to
- * 1e0 and blows through this bound by four orders of magnitude; it cannot hide under it.
+ * export_models.make_case rounds the landmarks to 6 decimals BEFORE computing every stored
+ * field, so a correct port reproduces each field to the stored outputs' own 6-decimal rounding
+ * half-step, 0.5e-6, inside the file's 1e-6 tolerance: measured 5.0e-7 worst over the 41 cases,
+ * on shape42, static_feature and palm_scale alike. Every field is therefore held to
+ * golden.tolerance.features with no allowance on top. Any allowance above that hides a real
+ * error: the finite-difference bound this file once carried (from an older export that
+ * computed the outputs from unrounded landmarks) let a +6e-6 injected on one component pass.
  *
  * Independently confirmed twice, outside this file: fed the same rounded landmarks, this port and
  * temporal/features.py agree to 4.4e-16 on shape42, 8.9e-16 on static_feature, 5.6e-17 on
  * palm_scale and on every gate -- and over 400 randomized hands (both handedness labels, five
- * aspect ratios, 75 j_gate and 59 z_gate firings) to 1.3e-15 with zero gate disagreements. The
- * port is exact; the input rounding is the whole gap.
+ * aspect ratios, 75 j_gate and 59 z_gate firings) to 1.3e-15 with zero gate disagreements.
  *
  * The golden vectors reach only the five per-frame functions. The temporal half is checked at
  * the bottom of this file against the properties its docstrings claim -- see the note there.
@@ -34,100 +32,114 @@ import { dirname, join } from 'node:path';
 
 import {
   toIsotropic, canonicalizeHandedness, palmScale, palmCentre, shape42, staticFeature,
+  staticFeatureV4, staticFeatureFor, thumbStraightness, tipPalmDistances, thumbPinkyMcp,
   pairDistances, jGate, zGate, rollingShapeSigma, rollingShapeSigmaAligned, movingAverageTime,
-  palmSpeed, resampleArclength, turningAngles, pathLength, eventFeatures,
-  KEY_POINTS, STATIC_DIM, SHAPE_DIM, EVENT_DIM, K_RESAMPLE,
+  palmSpeed, trailingWindow, windowSpeed, resampleArclength, turningAngles, pathLength,
+  eventFeatures, KEY_POINTS, STATIC_DIM, STATIC_DIM_V4, STATIC_FEATURES, THUMB_TARGETS,
+  J_THUMB_MAX, SHAPE_DIM, EVENT_DIM, K_RESAMPLE,
 } from './features.js';
+import { swapTasksHandedness } from './app.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const golden = JSON.parse(readFileSync(join(HERE, 'golden.json'), 'utf8'));
 const TOL = golden.tolerance.features;
-
-//: Half of golden.json's 6-decimal rounding step: the most any stored input coordinate can
-//: differ from the value Python actually computed from.
-const QUANT = 0.5e-6;
-//: Finite-difference step for the sensitivity estimate. Far above QUANT so the difference is
-//: not itself rounding noise, far below any scale on which these features curve.
-const FD_STEP = 1e-4;
+// The feature tag of each forest, from models.json: what selects the function per case.
+const payload = JSON.parse(readFileSync(join(HERE, 'models.json'), 'utf8'));
+const TAGS = { static: payload.static.feature };
+if (payload.digits) TAGS.digits = payload.digits.feature;
 
 let failures = 0;
 
-/** First-order bound on |f(x) - f(x_true)| for each component of f, given |dx_j| <= QUANT.
- *
- * sum_j |df_k/dx_j| * QUANT, with the partials measured by central differences on the landmark
- * coordinates themselves. Every coordinate is perturbed, because the palm scale and palm centre
- * that f divides and subtracts by depend on several of them at once.
- */
-function quantizationBound(lm, f) {
-  const base = f(lm);
-  const bound = new Array(base.length).fill(0);
-  for (let i = 0; i < lm.length; i++) {
-    for (let d = 0; d < 2; d++) {
-      const hi = lm.map((p) => p.slice());
-      const lo = lm.map((p) => p.slice());
-      hi[i][d] += FD_STEP;
-      lo[i][d] -= FD_STEP;
-      const a = f(hi);
-      const b = f(lo);
-      for (let k = 0; k < base.length; k++) {
-        bound[k] += Math.abs((a[k] - b[k]) / (2 * FD_STEP)) * QUANT;
-      }
-    }
-  }
-  return bound;
-}
-
-/** Report one field: PASS only if EVERY component sits inside its OWN allowance.
- *
- * The printed numbers are the maxima over components, which need not come from the same
- * component -- the verdict is per component, so a single feature exceeding its own bound fails
- * the field even when some other component happens to be allowed more.
- */
-function check(caseIdx, field, got, want, bound, extra = '') {
+/** Report one field: PASS only if EVERY component sits inside golden.tolerance.features. The
+ *  printed number is the maximum over components. */
+function check(caseIdx, field, got, want, extra = '') {
   let err = got.length === want.length ? 0 : Infinity;
-  let allowed = TOL;
   let ok = got.length === want.length;
   for (let i = 0; i < got.length && got.length === want.length; i++) {
     const d = Math.abs(got[i] - want[i]);
-    const a = Math.max(TOL, bound ? bound[i] : 0);
-    if (d > a) ok = false;
+    if (d > TOL) ok = false;
     if (d > err) err = d;
-    if (a > allowed) allowed = a;
   }
   if (!ok) failures += 1;
   const shown = Number.isFinite(err) ? err.toExponential(2) : 'LENGTH MISMATCH';
   console.log(`case ${String(caseIdx).padStart(2)}  ${field.padEnd(14)} ` +
               `${ok ? 'PASS' : 'FAIL'}  max|d| = ${shown}  ` +
-              `allowed ${allowed.toExponential(2)}${extra}`);
+              `allowed ${TOL.toExponential(2)}${extra}`);
 }
 
-// The exact call order export_models.py uses: isotropic first, then chirality.
+// The exact call order export_models.py uses: isotropic first, then chirality. A Tasks-API case
+// carries the label the Tasks API reported, which the page swaps before canonicalizing.
+const labelOf = (c) => (c.api === 'tasks' ? swapTasksHandedness(c.reported_handedness)
+  : c.handedness);
 const prepare = (c) => (lm) => canonicalizeHandedness(toIsotropic(lm, c.width, c.height),
-                                                      c.handedness);
+                                                      labelOf(c));
 
+let skipped = 0;
 golden.cases.forEach((c, idx) => {
+  const which = c.model || 'static';
+  if (!(which in TAGS)) {
+    // The export writes golden.json and models.json together, so a case for a forest the
+    // payload does not carry means the two files are from different runs.
+    console.log(`case ${String(idx).padStart(2)}  ${which.padEnd(14)} FAIL  models.json carries no ${which} forest`);
+    failures += 1;
+    return;
+  }
+  const [featureFn, dim] = staticFeatureFor(TAGS[which]);
   const P = prepare(c)(c.landmarks);
 
   const s42 = shape42(P);
-  const feat = staticFeature(P);
+  const feat = featureFn(P);
   if (s42.length !== SHAPE_DIM) throw new Error(`shape42 built ${s42.length}-D`);
-  if (feat.length !== STATIC_DIM) throw new Error(`staticFeature built ${feat.length}-D`);
+  if (feat.length !== dim) throw new Error(`${TAGS[which]} built ${feat.length}-D, expected ${dim}`);
 
-  const b42 = quantizationBound(c.landmarks, (lm) => shape42(prepare(c)(lm)));
-  const bsf = quantizationBound(c.landmarks, (lm) => staticFeature(prepare(c)(lm)));
-  const bps = quantizationBound(c.landmarks, (lm) => [palmScale(prepare(c)(lm))]);
+  const tagNote = `  [${which} ${TAGS[which]} ${dim}-D${c.api === 'tasks' ? ', tasks label swapped' : ''}]`;
+  check(idx, 'shape42', s42, c.shape42);
+  check(idx, 'static_feature', feat, c.static_feature, tagNote);
+  check(idx, 'palm_scale', [palmScale(P)], [c.palm_scale]);
 
-  check(idx, 'shape42', s42, c.shape42, b42);
-  check(idx, 'static_feature', feat, c.static_feature, bsf);
-  check(idx, 'palm_scale', [palmScale(P)], [c.palm_scale], bps);
-
-  // The gates are inequalities, so quantization cannot nudge them unless the frame sits on a
-  // threshold; they are required to match exactly.
+  // The gates are inequalities; they are required to match exactly.
   const j = jGate(P);
   const z = zGate(P);
-  check(idx, 'j_gate', [j === c.j_gate ? 0 : 1], [0], null, `  (got ${j}, want ${c.j_gate})`);
-  check(idx, 'z_gate', [z === c.z_gate ? 0 : 1], [0], null, `  (got ${z}, want ${c.z_gate})`);
+  check(idx, 'j_gate', [j === c.j_gate ? 0 : 1], [0], `  (got ${j}, want ${c.j_gate})`);
+  check(idx, 'z_gate', [z === c.z_gate ? 0 : 1], [0], `  (got ${z}, want ${c.z_gate})`);
 });
+
+// The tolerance must stay tight enough to see a port error of the size it once let through:
+// a +5e-6 on one component of the first case's own feature vector has to fail.
+{
+  const c = golden.cases[0];
+  const [featureFn] = staticFeatureFor(TAGS[c.model || 'static']);
+  const feat = Array.from(featureFn(prepare(c)(c.landmarks)));
+  feat[7] += 5e-6;
+  const before = failures;
+  const quiet = console.log;
+  console.log = () => {};
+  check(0, 'perturbed', feat, c.static_feature);
+  console.log = quiet;
+  const caught = failures === before + 1;
+  failures = before + (caught ? 0 : 1);
+  console.log(`case --  +5e-6 mutant   ${caught ? 'PASS' : 'FAIL'}  a 5e-6 error on one component ` +
+              `${caught ? 'fails' : 'PASSES'} the ${TOL.toExponential(0)} tolerance`);
+}
+
+// The letter forest ships on static/v4, so every letter case must carry a 112-D vector once the
+// export has been regenerated; until then the cases are v3 and this says so instead of failing.
+{
+  const letterCases = golden.cases.filter((c) => (c.model || 'static') === 'static');
+  if (TAGS.static !== 'static/v4') {
+    console.log(`skip    112-D golden vectors: models.json's letter forest is ${TAGS.static}, ` +
+                'not static/v4 yet (regenerate with export_models.py after train_static.py)');
+    skipped += 1;
+  } else {
+    const all112 = letterCases.every((c) => c.static_feature.length === STATIC_DIM_V4);
+    check('--', '112-D letters', [all112 ? 0 : 1], [0],
+          `  (${letterCases.length} letter cases, every static_feature ${STATIC_DIM_V4}-D: ${all112})`);
+  }
+  const tasksCases = golden.cases.filter((c) => c.api === 'tasks');
+  const digitCases = golden.cases.filter((c) => c.model === 'digits');
+  console.log(`        ${letterCases.length} letter cases (${tasksCases.length} from the Tasks API), ` +
+              `${digitCases.length} digit cases`);
+}
 
 // A handedness ARRAY must throw rather than silently doing nothing, which is the whole reason
 // the Python raises: str(ndarray) starts with "[" and matched neither branch, leaving genuinely
@@ -138,7 +150,7 @@ try {
 } catch (err) {
   threw = err instanceof TypeError;
 }
-check('--', 'array label', [threw ? 0 : 1], [0], null,
+check('--', 'array label', [threw ? 0 : 1], [0],
       threw ? '  (throws TypeError)' : '  (no TypeError raised)');
 
 // --------------------------------------------------------------------------------------
@@ -150,7 +162,9 @@ check('--', 'array label', [threw ? 0 : 1], [0], null,
 // an identity the Python satisfies too, so it fails on a divergence in either direction.
 // --------------------------------------------------------------------------------------
 
+let nInvariants = 0;
 function invariant(name, ok, detail) {
+  nInvariants += 1;
   if (!ok) failures += 1;
   console.log(`inv --  ${name.padEnd(38)} ${ok ? 'PASS' : 'FAIL'}  ${detail}`);
 }
@@ -170,7 +184,7 @@ for (let i = 0; i < 12; i++) {
   times.push(i * 0.04);
 }
 
-// shape42 subtracts the palm centre and divides by the palm triangle, so moving the hand across
+// shape42 subtracts the palm center and divides by the palm triangle, so moving the hand across
 // the frame or towards the camera must not move the feature at all. This is the normalization
 // the whole cross-session story rests on; if it silently stopped holding, accuracy would drop
 // only for signers sitting at a different distance, which is the hardest failure to notice.
@@ -185,6 +199,63 @@ const mirrored = HAND.map((p) => [-p[0], p[1]]);
 const dChiral = maxAbsDiff(staticFeature(canonicalizeHandedness(mirrored, 'Left')),
                            staticFeature(canonicalizeHandedness(HAND, 'Right')));
 invariant('chirality: mirror+Left == Right', dChiral === 0, `max|d| = ${dChiral.toExponential(2)}`);
+
+// static/v4 = static/v3 followed by the 11-value thumb block, in the Python's order. The
+// registry is what both sides key on; the block is rebuilt here from its definition (the
+// thumb chain, the five tips to the palm center, the thumb tip to 6, 7, 10, 11, 3) and
+// required positionally, because a reordering is a silent break the forest reads confidently.
+{
+  const v4 = staticFeatureV4(HAND);
+  const S4 = palmScale(HAND);
+  const m = palmCentre(HAND);
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const straight = d(HAND[4], HAND[1]) / (d(HAND[2], HAND[1]) + d(HAND[3], HAND[2]) + d(HAND[4], HAND[3]));
+  const tips = [4, 8, 12, 16, 20].map((i) => d(HAND[i], m) / S4);
+  const thumbTo = [6, 7, 10, 11, 3].map((j) => d(HAND[4], HAND[j]) / S4);
+  const manual = staticFeature(HAND).concat([straight], tips, thumbTo);
+  invariant('staticFeatureV4 layout + length',
+            v4.length === STATIC_DIM_V4 && manual.length === STATIC_DIM_V4
+            && maxAbsDiff(v4, manual) === 0 && v4[101] === thumbStraightness(HAND)
+            && maxAbsDiff(v4.slice(102, 107), tipPalmDistances(HAND)) === 0
+            && THUMB_TARGETS.join(',') === '6,7,10,11,3',
+            `${v4.length}-D = 101 + 1 + 5 + 5, max|d| vs the definition ${maxAbsDiff(v4, manual).toExponential(2)}`);
+  const v4s = staticFeatureV4(scaled);
+  invariant('staticFeatureV4 scale/translate-free', maxAbsDiff(v4, v4s) < 1e-12,
+            `max|d| = ${maxAbsDiff(v4, v4s).toExponential(2)}`);
+  const c4 = maxAbsDiff(staticFeatureV4(canonicalizeHandedness(mirrored, 'Left')),
+                        staticFeatureV4(canonicalizeHandedness(HAND, 'Right')));
+  invariant('staticFeatureV4 chirality', c4 === 0, `max|d| = ${c4.toExponential(2)}`);
+  const reg = STATIC_FEATURES;
+  invariant('STATIC_FEATURES registry',
+            reg['static/v3'][0] === staticFeature && reg['static/v3'][1] === STATIC_DIM
+            && reg['static/v4'][0] === staticFeatureV4 && reg['static/v4'][1] === STATIC_DIM_V4
+            && staticFeatureFor(null)[0] === staticFeature && Object.keys(reg).length === 2,
+            `v3 -> ${STATIC_DIM}, v4 -> ${STATIC_DIM_V4}, null -> v3`);
+  let unknown = false;
+  try { staticFeatureFor('static/v9'); } catch (e) { unknown = /unknown static feature tag/.test(e.message); }
+  invariant('an unregistered tag throws', unknown, 'static/v9 -> Error');
+}
+
+// The J gate's thumb ceiling is J_THUMB_MAX (1.30; was 1.20), measured on the prompted takes:
+// 1.20 lost 13 of 60 J items at the gate. Pinned here by moving the I hand's thumb tip along the
+// line away from the pinky MCP so thumbPinkyMcp lands just under and just over the ceiling;
+// nothing else the gate reads (pinky, index, middle, ring extension) moves with it.
+{
+  const setThumb = (target) => {
+    const P = HAND.map((p) => p.slice());
+    const S = palmScale(P);
+    const dir = [P[4][0] - P[17][0], P[4][1] - P[17][1]];
+    const n = Math.hypot(dir[0], dir[1]);
+    P[4] = [P[17][0] + (dir[0] / n) * target * S, P[17][1] + (dir[1] / n) * target * S];
+    return P;
+  };
+  const under = setThumb(J_THUMB_MAX - 0.05);
+  const over = setThumb(J_THUMB_MAX + 0.05);
+  invariant('jGate thumb ceiling is J_THUMB_MAX', J_THUMB_MAX === 1.30 && jGate(HAND)
+            && jGate(under) && !jGate(over)
+            && Math.abs(thumbPinkyMcp(under) - (J_THUMB_MAX - 0.05)) < 1e-9,
+            `1.30: ${thumbPinkyMcp(under).toFixed(2)} passes, ${thumbPinkyMcp(over).toFixed(2)} fails`);
+}
 
 // ORDER IS THE FEATURE. Rebuild the distance block from itertools.combinations' own rule --
 // i ascending, j > i, over KEY_POINTS AS WRITTEN -- and require it positionally. A sorted or
@@ -261,11 +332,35 @@ for (const dt of [1 / 15, 1 / 60]) {
   for (let i = 0; i < n; i++) { c.push([0.25 * dt * i, 0]); sc.push(0.25); tt.push(i * dt); }
   const sp = palmSpeed(c, sc, tt);
   invariant(`palmSpeed frame-rate invariant @${Math.round(1 / dt)}fps`,
-            Math.abs(sp[n - 1] - 1.0) < 1e-12, `steady state = ${sp[n - 1].toFixed(12)} palm/s`);
+            Math.abs(sp[n - 1] - 1.0) < 1e-12 && sp[0] === 0.0,
+            `steady state = ${sp[n - 1].toFixed(12)} palm/s, out[0] = ${sp[0]}`);
 }
 
-console.log(`\n${golden.cases.length} golden cases + 12 invariants: ` +
-            (failures ? `${failures} FAILING` : 'all pass'));
-console.log('allowance = max(golden tolerance 1e-6, measured sensitivity to the 6-decimal ' +
-            'rounding of golden.json\'s own input landmarks)');
+// palmSpeed IS the segmenter's vBar: the window holds every frame with t >= t_end - window and
+// averages the k steps between them, not the k+1 steps a per-step moving average over the same
+// window would (the step entering the window from before it is not counted). At dt = 0.1 s
+// and a 0.25 s window the window at i = 5 is frames 3, 4, 5 -> two steps. And a gap longer
+// than the window falls back to the last two frames rather than to one (no steps at all).
+{
+  const tt = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
+  const c = tt.map((t, i) => [i * i * 0.01, 0]);         // accelerating, so k vs k+1 differ
+  const sc = tt.map(() => 1.0);
+  const [j, k] = trailingWindow(tt, 0.5, 0.25);
+  const two = (Math.hypot(c[4][0] - c[3][0], 0) / 0.1 + Math.hypot(c[5][0] - c[4][0], 0) / 0.1) / 2;
+  const sp = palmSpeed(c, sc, tt, 0.25);
+  invariant('palmSpeed averages the k steps INSIDE the window',
+            j === 3 && k === 6 && Math.abs(sp[5] - two) < 1e-12
+            && Math.abs(windowSpeed(tt.slice(j, k), c.slice(j, k), sc.slice(j, k)) - two) < 1e-12,
+            `window [${j}, ${k}), out[5] = ${sp[5].toFixed(4)} (two steps: ${two.toFixed(4)})`);
+  const gapT = [0, 0.1, 0.2, 1.0];
+  const [gj, gk] = trailingWindow(gapT, 1.0, 0.33);
+  invariant('a gap longer than the window keeps the last two frames', gj === 2 && gk === 4,
+            `window [${gj}, ${gk})`);
+}
+
+console.log(`\n${golden.cases.length} golden cases + ${nInvariants} invariants: ` +
+            (failures ? `${failures} FAILING` : 'all pass') + (skipped ? ` (${skipped} skipped)` : ''));
+console.log('allowance = golden tolerance 1e-6 (golden.json\'s landmarks are rounded before its ' +
+            'outputs are computed, so the only residual is the 6-decimal rounding of the stored ' +
+            'values, <= 5e-7)');
 process.exit(failures ? 1 : 0);

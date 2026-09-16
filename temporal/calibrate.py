@@ -45,6 +45,14 @@ ARCHIVE_WH = (1920, 1080)      # the capture resolution; only the ratio enters t
 L_WINDOW = 1.2                 # seconds, the window L_MIN's safety claim is made over
 L_WINDOW_MIN_COVER = 1.0       # a window shorter than this is a clip edge, not a measurement
 
+#: The only fields --offline (and --live) measure; every other field of the JSON it writes is
+#: copied from thresholds.DEFAULT. tests/test_thresholds.py holds the committed
+#: thresholds_archive.json to this list, because the file drifted from DEFAULT twice -- once
+#: carrying 14 retired pre-data guesses, once carrying VOTE_PROB_FLOOR 0.50 after the default
+#: moved to 0.55 -- and anything run with --thresholds thresholds_archive.json silently ran
+#: the stale values. Regenerate with `calibrate.py --offline` whenever a default changes.
+OFFLINE_FIELDS = ("V_STILL", "V_MOVE_ARMED", "V_MOVE_UNARMED", "SHAPE_STABLE")
+
 
 def _pct(a, q):
     return float(np.percentile(np.asarray(a, dtype=np.float64), q))
@@ -92,10 +100,14 @@ def check_time_base(spans, dts):
 def held_sign_signals():
     """Every per-frame stillness signal the archive can produce, pooled over 24 held signs.
 
-    v_bar and sigma are computed by the same functions the segmenter calls, so a percentile
-    of these arrays is directly comparable to the threshold it sets. Handedness is not
-    canonicalized: the archive carries no handedness label, and mirroring changes no distance
-    that appears below.
+    v_bar and sigma are computed by the same arithmetic the segmenter runs (features.palm_speed
+    is Segmenter._update_signals per frame: features.trailing_window + features.window_speed;
+    rolling_shape_sigma is its sigma), so a percentile of these arrays is directly comparable
+    to the threshold it sets. That was not true before: the old palm_speed averaged one step
+    more than the segmenter and disagreed with it on 2,352 of 2,354 archive frames (p95 0.841
+    against 0.859), so the numbers printed here were of a signal the thresholds never see.
+    Handedness is not canonicalized: the archive carries no handedness label, and mirroring
+    changes no distance that appears below.
     """
     if not os.path.exists(SEQ):
         raise SystemExit(f"{SEQ} not found -- run extract_static_sequences.py first")
@@ -123,8 +135,8 @@ def held_sign_signals():
         P = F.to_isotropic(lm[c][idx][:, :, :2], *ARCHIVE_WH)
         m, S = F.palm_centre(P), F.palm_scale(P)
 
-        # palm_speed pads a leading 0.0 so its output aligns with the frames; that zero is a
-        # placeholder, not a measured speed, and the 5-sample smoothing spreads it. Drop it.
+        # The first frame of a burst has no step behind it and reads 0.0; that is a placeholder,
+        # not a measured speed (the segmenter reports 0.0 there for the same reason). Drop it.
         v_all.append(F.palm_speed(m, S, t, window_s=TH_DEFAULT.V_SMOOTH_WINDOW)[1:])
         sigma_all.append(F.rolling_shape_sigma(F.shape42(P), t, DEFAULT.SHAPE_WINDOW))
 
@@ -209,15 +221,15 @@ def run_offline(out_path):
     for name in NEEDS_GESTURE_DATA:
         print(f"  {name:<15} {getattr(DEFAULT, name):>7}   {_why_not_measurable(name)}")
 
-    th = Thresholds(**{**asdict(DEFAULT),
-                       "V_STILL": _ceil2(rows[0][2]),
-                       "V_MOVE_ARMED": _ceil2(rows[1][2]),
-                       "V_MOVE_UNARMED": _ceil2(rows[2][2]),
-                       "SHAPE_STABLE": _ceil2(rows[3][2])})
+    measured = {name: _ceil2(value) for name, _, value, _, _ in rows}
+    assert tuple(measured) == OFFLINE_FIELDS, (tuple(measured), OFFLINE_FIELDS)
+    th = Thresholds(**{**asdict(DEFAULT), **measured})
     _emit(th, out_path,
           "recomputed values, rounded up to 2 dp; the NEEDS-GESTURE-DATA constants are copied\n"
-          "from thresholds.DEFAULT untouched. thresholds.py ships slightly rounder numbers "
-          "still\n(0.85 / 1.30 / 2.10 / 0.14); the difference is margin, not disagreement.")
+          "from thresholds.DEFAULT untouched. thresholds.py ships 0.85 / 1.30 / 2.10 / 0.14:\n"
+          "V_STILL sits 0.01 under the recomputed p95 and is kept because every held sign of\n"
+          "the archive still parks on replay; V_MOVE_UNARMED is not read by the state machine\n"
+          "(overlay tick only); SHAPE_STABLE is rounded up. Margin, not disagreement.")
     return th
 
 
@@ -229,13 +241,18 @@ def _whole_clip_sigma(d, c):
 
 
 def _why_not_measurable(name):
+    # Every name in thresholds.NEEDS_GESTURE_DATA needs a line here: a missing one used to
+    # raise KeyError after the percentile table and before the JSON was written, so the
+    # provenance run the docstring promises could not complete. Unknown names now say so.
     return {
         "RIGID_VETO": "how much a hand reshapes DURING a J or Z; no gesture in the archive",
         "T_MIN": "how long a J or Z takes; nothing in the archive is a gesture",
         "T_MAX": "same, upper end",
         "P_EMIT": "an operating point on the motion classifier, which has no training data yet",
         "MARGIN": "same; sweep on S1 GroupKFold once clips exist, never on the test session",
-    }[name]
+        "V_SMOOTH_WINDOW": "0.33 s reproduces the 15 fps archive's smoothing exactly, but only "
+                           "labeled J/Z footage can say whether a gesture's onset survives it",
+    }.get(name, "listed in thresholds.NEEDS_GESTURE_DATA without a reason recorded here")
 
 
 # ---------------------------------------------------------------- live mode
@@ -310,7 +327,7 @@ def _phase(cap, hands, drawer, prompt, seconds, countdown=2.0):
 
 def _phase_signals(times, P):
     m, S = F.palm_centre(P), F.palm_scale(P)
-    v = F.palm_speed(m, S, times, window_s=TH_DEFAULT.V_SMOOTH_WINDOW)[1:]      # same leading-placeholder drop as offline
+    v = F.palm_speed(m, S, times, window_s=TH_DEFAULT.V_SMOOTH_WINDOW)[1:]      # same first-frame drop as offline
     sigma = F.rolling_shape_sigma(F.shape42(P), times, DEFAULT.SHAPE_WINDOW)
     return v, sigma
 
@@ -388,9 +405,10 @@ def run_live(out_path, camera, hold_s, move_s):
     armed = round(max(armed, still + 0.01), 2)
     unarmed = round(max(unarmed, armed + 0.01), 2)
 
-    th = Thresholds(**{**asdict(DEFAULT),
-                       "V_STILL": still, "V_MOVE_ARMED": armed,
-                       "V_MOVE_UNARMED": unarmed, "SHAPE_STABLE": _ceil2(stable)})
+    measured = {"V_STILL": still, "V_MOVE_ARMED": armed,
+                "V_MOVE_UNARMED": unarmed, "SHAPE_STABLE": _ceil2(stable)}
+    assert set(measured) == set(OFFLINE_FIELDS), (sorted(measured), OFFLINE_FIELDS)
+    th = Thresholds(**{**asdict(DEFAULT), **measured})
     _emit(th, out_path, "measured on this camera, this session; the other constants are "
                         "thresholds.DEFAULT.")
     return th
