@@ -18,17 +18,14 @@ TRAINING frames only -- a held-out fold or a live frame never goes through eithe
      palm_scale(frame))^2) independently per landmark coordinate, in the canonical isotropic
      coordinates the feature is computed from, so sigma is in palm units and scales with the
      hand's distance from the camera. The originals are kept and everything is re-featurized.
-     Measured leave-one-session-out with the 112-D static/v4 feature and RF(100, min leaf 5),
-     seed 0 (3-seed means within 0.01), pooled / cross-day (the November archive held out):
-     with no filter, jitter sigma 0.12 x4 lifts 0.781 / 0.650 to 0.874 / 0.790 (+0.09 /
-     +0.14); stacked on the strong filter, which is what ships, it lifts 0.830 / 0.690 to
-     0.861 / 0.763 (+0.03 / +0.07). The +0.10 / +0.10 over the previous release (0.759 /
-     0.659, the rotation-augmented 101-D RF400) is the WHOLE recipe -- feature, filter,
-     jitter and forest -- not the jitter term. Jitter alone scores higher on this protocol
-     than jitter plus the filter (0.874 / 0.790 against 0.861 / 0.763); the filter is kept
-     for the browser condition (P recall stays 1.00 under the page's Tasks landmarks, where
-     the X-filter-only candidate drops to 0.77) and for D no longer being read as X. The
-     four-angle rotation augmentation that used to ship was retired because it LOWERED
+     Measured leave-one-session-out on the author's sessions alone, with the 112-D static/v4
+     feature and RF(100, min leaf 5), seed 0 (3-seed means within 0.01), pooled / cross-day
+     (the November archive held out): with no filter, jitter sigma 0.12 x4 lifts 0.781 / 0.650
+     to 0.874 / 0.790 (+0.09 / +0.14); stacked on the strong filter, it lifts 0.830 / 0.690 to
+     0.861 / 0.763 (+0.03 / +0.07). The filter shipped for one release and is retired now
+     (train_static.py says why: its thresholds are one hand's, and with other people's hands
+     in the training set it costs on every axis); RULESETS and filter_training stay for the
+     ablation. The four-angle rotation augmentation that used to ship was retired because it LOWERED
      leave-one-session-out accuracy, 0.782 without it to 0.759 with it (S3 0.823 -> 0.661),
      having only ever been justified by within-session confidence.
 

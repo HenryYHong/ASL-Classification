@@ -21,3 +21,10 @@ docs/browser_log.jsonl
 # Written by docs/make_demo.sh beside the committed GIF. It is the asset to drag into a
 # GitHub editor for an inline player; the repo itself ships the GIF.
 docs/demo.mp4
+
+# The Google Books 1-gram counts docs/build_words.py and temporal/simulate_words.py read
+# (1.5 MB, CC BY 3.0; fetched with curl -L from norvig.com). The derived docs/words.txt is
+# what ships.
+docs/google-books-common-words.txt
+# ingest_aslnow.py's download cache; the derived temporal/aslnow.npz is what ships.
+temporal/.aslnow_cache/

@@ -45,7 +45,7 @@ out of it.
 Three things are fetched from the network on first load and then cached by the browser:
 MediaPipe's `tasks-vision@0.10.18` bundle and WASM from jsDelivr (about 9 MB), the hand
 landmarker `.task` file from `storage.googleapis.com`, and `models.json` from this directory —
-11.6 MB raw, 2.1 MB gzipped in transit, which is how GitHub Pages serves it. `words.txt` is a
+16.8 MB raw, 2.9 MB gzipped in transit, which is how GitHub Pages serves it. `words.txt` is a
 further 273 KB (130 KB gzipped), fetched in the background and not required: a page whose
 dictionary failed to load still recognizes letters and simply never hints. A blocked CDN and a
 slow connection look the same for the first few seconds, so `models.json`, the MediaPipe bundle
@@ -107,10 +107,11 @@ cannot pick up a new model with stale constants, and a page that loads an export
 cd docs && node test_forest.mjs              # confirms the new export still matches sklearn
 ```
 
-Measured on the shipped export: `models.json` is 11.64 MB raw and 2.08 MB gzipped. The letter
-forest is 133,680 nodes in 100 trees (10.21 MB raw, about 76 bytes per node; the exporter refuses
-past 200,000 nodes), the motion forest 10,390 nodes in 300 trees (0.33 MB), and the digit forest
-23,296 nodes in 100 trees (1.10 MB raw, which adds 0.27 MB gzipped over a letters-only export).
+Measured on the shipped export: `models.json` is 16.80 MB raw and 2.94 MB gzipped. The letter
+forest is 199,528 nodes in 80 trees (about 15.3 MB raw, 76 bytes per node; the exporter refuses
+past 200,000 nodes, and the forest is trained on 37,195 rows, so 80 trees rather than 100 is
+what fits), the motion forest 10,390 nodes in 300 trees (0.33 MB), and the digit forest 23,296
+nodes in 100 trees (1.10 MB raw, which adds 0.27 MB gzipped over a letters-only export).
 `golden.json` is 162 KB, 41 cases. Running the export twice gives byte-identical files; the
 `.gz` is written with a zeroed timestamp so it is a pure function of the `.json`.
 
@@ -187,25 +188,30 @@ appears underneath as a separate line, and only for two of the eight verdicts (`
 the recognizer look better than it measures, which is the failure this repository keeps removing.
 
 **The three constants are measured offline, not on recorded words.** `WORD_MIN_RATIO`,
-`WORD_DOMINANCE` and `WORD_PRIOR` (0.10 / 10 / 2.5) come from `temporal/simulate_words.py`,
+`WORD_DOMINANCE` and `WORD_PRIOR` (0.2 / 3 / 3.0) come from `temporal/simulate_words.py`,
 which spells 2,000 frequency-weighted common words, 600 proper names and 1,000 rare words out of
 random held-out holds of the leave-one-session-out letter posteriors, through the same vote gate
-the page runs, over five seeds, and scores what the layer would have shown. They came from a
-112-configuration sweep, min ratio {0.02, 0.05, 0.1, 0.2} x dominance {3, 5, 10, 20} x prior
-{0, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0}, which is the grid `simulate_words.py --sweep` runs by default;
-it ran at the 0.20 / 0.50 vote gate the floor was later raised from, and no cell won every table
-(consecutive-window retries preferred (0.10, 20, 3.0) and (0.20, 3, 3.0), fresh-hold retries
-(0.10, 5, 2.5)), so (0.10, 10, 2.5) was chosen as the cell within 0.015 utility of each table's
-best. At the shipped gate (0.20 / 0.55) and constants, common words are recovered 0.44 of the
-time and a wrong word is shown 0.07 of the time when a misread letter is retried from consecutive
-windows of the same hold (three tries), and 0.63 / 0.06 when every retry is a fresh hold (0.48 /
-0.07 and 0.68 / 0.05 at the 0.50 floor the sweep ran at); names 0.31 / 0.07 and 0.49 / 0.04; rare
-words 0.18 / 0.05 and 0.34 / 0.03, where the rare targets are drawn independently of the list and
-about a sixth of them are not in it at all (in-list 0.833), so those two recovered figures are
-capped there and measure list coverage as well as the layer (0.21 and 0.41 over the listed rare
-targets alone). The previous layer, on its own forest and gate, measured 0.445 / 0.158 and
-0.612 / 0.091 for common words under the same two retry models. Under the consecutive model
-most of the shown-wrong comes from a reading that lost a letter, which the layer cannot see.
+the page runs, over five seeds, and scores what the layer would have shown. They come from a
+sweep of min ratio {0.02, 0.05, 0.1, 0.2} x dominance {3, 5, 10, 20} x prior {0, 1.1, 1.4, 1.7,
+2.0, 2.5, 3.0}, the grid `simulate_words.py --sweep` runs by default, extended to min ratio 0.5
+and prior 4.0 once the optimum sat on its edge, re-run for the forest that ships at the 0.75
+floor. The tables want a stronger prior than the previous forest did (3.0 in the fresh-hold retry
+model, 4.0 in the same-hold one) and a tighter ratio; dominance barely matters once the prior is
+that strong. (0.2, 3, 3.0) is within 0.01 of the fresh-hold best and 0.025 of the same-hold best,
+and against the previous (0.1, 10, 2.5) on the same posteriors it trades one point of recovered
+words for hint precision 0.75 -> 0.83 (same-hold) and 0.86 -> 0.90 (fresh-hold) and 18% fewer
+wrong "is a word" confirmations. At the shipped gate and constants, common words are recovered
+0.43 of the time and a wrong word is shown 0.08 of the time when a misread letter is retried
+from consecutive windows of the same hold (three tries), and 0.66 / 0.05 when every retry is a
+fresh hold; names 0.27 / 0.06 and 0.54 / 0.03; rare words 0.14 / 0.05 and 0.36 / 0.03, where the
+rare targets are drawn independently of the list and about a sixth of them are not in it at all
+(in-list 0.833), so those two recovered figures are capped there and measure list coverage as
+well as the layer. The previous forest and constants at their 0.55 floor gave 0.44 / 0.07 and
+0.63 / 0.06 for common words: the higher floor drops more letters in the same-hold model, which
+no hint can repair, while the more confident forest recovers more in the fresh-hold one. The
+layer two releases ago, on its own forest and gate, measured 0.445 / 0.158 and 0.612 / 0.091.
+Under the consecutive model most of the shown-wrong comes from a reading that lost a letter,
+which the layer cannot see.
 Those are simulator numbers — the simulator models the segmenter, and the two retry models
 bracket what a signer does — not a recording of somebody
 spelling a word with the intended spelling written down. That recording is still the missing
@@ -243,34 +249,43 @@ them; the browser reproduces the Python's arithmetic, not its accuracy.
 
 | | result | split |
 | --- | --- | --- |
-| **Static letters, leave-one-session-out** | **0.861** (4,199/4,878); hold-level 95% CI [0.789, 0.923] over 57 session x letter bursts; 3 seeds 0.863 ± 0.004 | `temporal/crossval_static.py`: train on three sessions, test on the fourth, every held-out frame counted once |
-| — cross-day fold (S1 held out, all 24 letters) | 0.763; macro per-letter recall 0.762 | hold out the 2024 archive, train on the three 2026 sessions |
-| — nested, selection-unbiased | 0.860 pooled, 0.764 cross-day | an inner leave-one-session-out chooses the recipe per outer fold; the inner selection is degenerate for the S1 and S2 folds (inner training sets lack most letters), so it is a floor, not a verdict against the recipe; a development-run figure that `crossval_static.py` does not reproduce |
-| — previous release, same folds | 0.759 / 0.659 | `crossval_static.py --legacy` |
-| Static emission, the 71 held-out holds | exactly the right letter 65/71; silent 2/71; latency 0.46 s median, 0.96 s p90; cross-day 19/24 | fold models, real timestamps, one fresh segmenter per hold |
-| Idle hand, 43 clean holds from this page's own log | 0/43 holds, 0/2,064 votes emit; 59/79 of the page's live emissions survive the floor | one signer, one ~2-minute stretch |
+| **Static letters, leave-one-session-out** | **0.913** (4,454/4,878); hold-level 95% CI [0.858, 0.958] over 57 session x letter bursts; 3 seeds 0.910 ± 0.004 | `temporal/crossval_static.py`: train on three of the author's sessions plus the strangers, test on the fourth, every held-out frame counted once |
+| — cross-day fold (S1 held out, all 24 letters) | 0.873; macro per-letter recall 0.871 | hold out the 2024 archive, train on the three 2026 sessions and the strangers |
+| — the same recipe on the author's sessions only | 0.867 / 0.778 | `crossval_static.py --henry-only` |
+| — previous releases, same folds | 0.861 / 0.763; before that 0.759 / 0.659 | `crossval_static.py --legacy` reproduces the older pair |
+| **Static letters, other people's hands** | **0.790** ± 0.003 on 1,874 ASLNow records (24 letters, this page's landmarker); the one-signer forest 0.781 | `temporal/crossval_strangers.py`: train on the author's sessions and the 218-signer O/V/W/F photos, test on a set the forest never saw |
+| — the vote gate on those records | emits on 0.46 of single frames, right on 0.962 of those | same forest, shipped thresholds; one frame per record, so a floor on what a visitor sees |
+| — 218 signers, O/V/W/F | 0.936 ± 0.004; the one-signer forest 0.766 (V 0.17 -> 0.83) | train on the author's sessions and ASLNow, test on the digit photos |
+| — ASLNow, five folds | 0.946 ± 0.002 | a participant may sit on both sides (no ids), so an upper bound |
+| Static emission, the 71 held-out holds | exactly the right letter 64/71; one wrong letter in 71; silent 6/71; latency 0.46 s median, 1.27 s p90; cross-day 21/24 | `temporal/replay_static.py`: fold models, real timestamps, one fresh segmenter per hold; previous release 65/71, four wrong letters, silent 2, cross-day 19/24 |
+| Idle hand, 43 clean holds from this page's own log | 0/43 holds, 0/2,064 votes emit at the 0.75 floor; 5/43 at the previous 0.55 floor, every one a G | `temporal/idle_gate.py`: one signer, one ~2-minute stretch |
 | Motion letters {J, Z, MOVE} | 0.951; J+Z recall 0.946 at `P_EMIT` 0.55; 2 false J in 28 MOVE events | `GroupKFold(5)` by prompted item, 102 events in 80 items; the label set changed this release, so this replaces the earlier 0.864 |
 | Motion, end to end on the five takes | 85 of 113 items produce their letter, 0 doubles, 0 rest-phase J/Z over 5.5 min | in-sample for the motion forest; replayed with the per-frame handedness label this page feeds, through the segmenter's handedness latch (`HAND_SWITCH_S`, 0.50 s) — without the latch the same replay credits 79, with it all 113 item strings match a replay with one modal label per take, which is how training events are cut; `temporal/evaluate.py` gives the same 85 (S1 74/90 + S5 11/23) |
 | `J_GATE` on held `I` | 100/100; 13 of 2,278 other frames pass, all Y | committed archive; a Y held still and then moved could arm a track that no negative example resembles, and no such footage exists |
 | Segmenter over 157 s of held signs | 24/24 letters exactly once, 0 track starts | committed archive, in-sample |
-| This page's landmarker vs the training landmarker | gap +0.001 over 3 seeds on the cross-day fold (paired 95% CI about ±0.03); 0.775 with the handedness swap, 0.730 without | the archive re-extracted with the Tasks API — the CPU build run from Python in VIDEO mode, not the GPU delegate this page runs |
+| This page's landmarker vs the training landmarker | gap +0.001 over 3 seeds on the cross-day fold (paired 95% CI about ±0.03); 0.775 with the handedness swap, 0.730 without | the previous release's forest on the archive re-extracted with the Tasks API — the CPU build run from Python in VIDEO mode, not the GPU delegate this page runs. The ASLNow records are that landmarker on other people's hands, and the forest now trains on them |
 | Input resolution, hand distance | 1920x1080 to 426x240: within ±0.004; hand shrunk to the log's typical palm size: −0.02 | same fold; synthetic shrink |
 | Digits, leave-signer-out | 0.986 (1,780/1,805); worst digit 6 at 0.965 | `GroupKFold(5)` by signer over 222 signer runs of a public photo set; nothing on the author |
 
-**0.86 is the figure worth quoting, and 0.76 is the one to plan around.** Two of the four
-sessions are targeted re-recordings covering six and four letters, so their folds score high on a
-handful of well-separated shapes; the pooled figure counts every held-out frame once. The three
-later sessions were recorded on the same evening, 2026-09-10, about two and a half hours apart,
-so the 2024 archive is the only cross-day fold and the only one that tests the whole alphabet.
-On it M, E, N, S and O fall below 0.6 recall (M 0.00, E 0.12, N 0.20, S 0.54, O 0.55), and M, N,
-S and O did so under every recipe tried: the archive's M, N and S were recorded off the textbook
-handshape, which is a data limitation, not a threshold to tune.
+**0.91 is the figure worth quoting, 0.87 is the one to plan around for the author's hand, and
+0.79 is the one to plan around for anyone else's.** Two of the four sessions are targeted
+re-recordings covering six and four letters, so their folds score high on a handful of
+well-separated shapes; the pooled figure counts every held-out frame once. The three later
+sessions were recorded on the same evening, 2026-09-10, about two and a half hours apart, so
+the 2024 archive is the only cross-day fold and the only one that tests the whole alphabet. On
+it M (0.01) and R (0.58) fall below 0.6 recall; the archive's M was recorded off the textbook
+handshape, which is a data limitation, not a threshold to tune, and E, N, S and O, which fell
+below 0.6 in the previous release, are read now that other people's versions of them are in the
+training set.
 
-Everything above except the digits is **one signer**: four static sessions (4,878 frames, 23,705
-rows after the geometry filter and jitter) and five prompted motion takes (117 events in 92
-items). Nothing here says anything about a different person's hands, and a visitor to the page
-is necessarily a different person. The digits are the reverse: 218 strangers and never the
-author.
+The letters are no longer **one signer**: the forest trains on four static sessions of the
+author (4,878 frames) plus 2,561 frames of other people's hands from two public landmark sets
+(`temporal/strangers.py`; 37,195 rows after jitter), and it is measured on strangers with each
+set held out in turn. What is still one signer is the motion branch (five prompted takes, 117
+events in 92 items), the idle-hand log, and the replay of held signs. The 0.79 is a forest that
+never saw the ASLNow set; the shipped forest trains on it, so a visitor gets something better
+than that by an amount that cannot be measured until another multi-signer set exists, and 0.95
+is its ceiling. The digits are the reverse: 218 strangers and never the author.
 
 The page repeats these numbers directly under the video, before anyone reads a letter off it,
 for that reason.

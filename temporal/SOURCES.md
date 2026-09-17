@@ -198,15 +198,61 @@ the browser-condition rows in the READMEs (gap +0.001 over three seeds on the cr
 build, VIDEO mode, not the page's GPU delegate. It exists only for S1 because S1 is the only
 session with raw frames.
 
+## 7. ASLNow — other people's letters through the browser's own landmarker; ingested
+
+<https://huggingface.co/datasets/sid220/asl-now-fingerspelling> (MIT), the training data of the
+ASLNow! fingerspelling web app: 2,122 JSON records, one per capture, each the 21 hand landmarks
+MediaPipe's **Web Hand Landmarker** returned for a participant signing a letter into a webcam.
+"Collected from multiple participants" is all the source says about who; there is no participant
+id, no frame size and no handedness label. It is the one public source found that matches the
+hosted page's condition — the Tasks-API landmarker, on other people's hands, in other people's
+rooms — and it is what turned "one signer" into a measured number for the static letters.
+
+```
+./.venv/bin/python temporal/ingest_aslnow.py            # downloads ~8 MB of JSON -> temporal/aslnow.npz
+```
+
+What `ingest_aslnow.py` does with the two missing fields, so the decisions can be revisited:
+
+- **Frame size.** x is normalized by width and y by height, so u = x * (W/H) needs the capture
+  size. The palm triangle settles it: over the upright palm-forward letters the palm's
+  width-to-height ratio is 0.755 on this project's own frames, and the records give 0.728 at
+  4:3, 0.569 square, 0.932 at 16:9. Web apps ask for 640x480; 4:3 is stored as `aspect`.
+- **Handedness.** About half the records (56%) are the mirror image of this project's canonical
+  frame — left-handed participants, a mirrored video feed in some sessions, or both; for
+  training it does not matter which. A forest trained on this project's four sessions, canonical
+  frames labeled 0 and their mirror images 1, decides per record (`mirror`, with its
+  probability in `mirror_p`); it separates the two on 9,752 of 9,756 held-out frames of the
+  author's and is confident on 95% of the records. The decision is reproducible from the
+  committed sessions (`tests/test_strangers.py` checks it).
+- **J and Z.** 248 records are stills labeled J or Z; a still of a J is an I, and the static
+  forest has no J or Z class, so they are stored and never trained on.
+- **Participants.** No ids, and hand proportions do not cluster into people (the pose dominates
+  every bone-length ratio), so the set cannot be split by signer. It is not bursts either: the
+  nearest same-letter neighbor sits at a median 0.31 palm units in shape space, against 0.07
+  inside one of the author's own held bursts, so every record is a separate capture.
+
+How it is used (`strangers.py`, `crossval_strangers.py`): held out entirely as the cross-signer
+test set — a forest trained on the author's sessions and the digit photos, which never saw it,
+reads 0.790 of its 1,874 letter records — and as training data for the shipped forest, which
+lifts the author's own cross-day fold from 0.778 to 0.873 and the 218-signer V from 0.17 to 0.83.
+With it in training, its five-fold number (0.946) is an upper bound, since a participant may sit
+on both sides of a fold.
+
+The **Sign Language Digits Dataset** (section 5) is the other stranger set for the letters: its
+0, 2, 6 and 9 are O, V, W and F exactly, so 687 of its photographs are letter frames from 218
+more hands. `strangers.load_ankara_letters` maps them.
+
 ## Still-image letter sets: the next honest test for the letters
 
-Two public sets cover the 24 static letters with more than one signer, and this file used to
-dismiss them for lacking J and Z. That was the wrong reason: the static forest is one signer's
-hand, and a cross-signer static number is exactly what it lacks. They are not useful for the
-motion branch, but they are the next test worth running for the letters, as a **test set** (the
-training distribution should still be your camera), through the same `ingest_images.py` path the
-digits used — with a signer rule written for their file layout, since `runs` encodes the Ankara
-set's numbering.
+Two more public sets cover the 24 static letters with more than one signer, and this file used to
+dismiss them for lacking J and Z. That was the wrong reason. ASLNow (above) gave the letters
+their first cross-signer number, but it is one frame per record with no participant id; a set
+with known signers, or with video, would give a by-signer split and a held-sign replay on
+strangers, which nothing here has. They are not useful for the motion branch, but they are the
+next test worth running for the letters, through the same `ingest_images.py` path the digits
+used — with a signer rule written for their file layout, since `runs` encodes the Ankara set's
+numbering.
 
 - **ASL Fingerspelling A / B** (Pugeault and Bowden, "Spelling It Out"): A is 131k images of
   24 letters from 5 signers, B is 9 signers. Still images, so each is its own hold. A Kaggle

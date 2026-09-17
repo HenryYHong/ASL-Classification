@@ -55,13 +55,17 @@ if (digitsModel) {
   if (!ok) failures++;
   console.log(`${ok ? 'pass' : 'FAIL'}  digit forest is static/v4: dim ${digitsModel.dim} (112), ` +
               `classes ${digitsModel.classes.join('')}`);
-  const thOk = Number.isFinite(dth.VOTE_MARGIN_CLEAR) && Number.isFinite(dth.VOTE_PROB_FLOOR)
+  // Numbers mode runs its own measured gate (thresholds.py DIGITS_OVERRIDES): a wider margin
+  // and its own floor and confident route. The letters' floor has since moved above the
+  // digits' (0.75 against 0.60, idle_gate.py), so this pins the digits block's own values
+  // rather than an ordering between the two modes.
+  const thOk = dth.VOTE_MARGIN_CLEAR === 0.40 && dth.VOTE_PROB_FLOOR === 0.60 && dth.VOTE_PROB === 0.70
     && dth.VOTE_MARGIN_CLEAR > payload.thresholds.VOTE_MARGIN_CLEAR
-    && dth.VOTE_PROB_FLOOR > payload.thresholds.VOTE_PROB_FLOOR;
+    && Object.keys(dth).length === Object.keys(payload.thresholds).length;
   if (!thOk) failures++;
-  console.log(`${thOk ? 'pass' : 'FAIL'}  digits thresholds raise the vote gate: ` +
-              `VOTE_MARGIN_CLEAR ${dth.VOTE_MARGIN_CLEAR}, VOTE_PROB_FLOOR ${dth.VOTE_PROB_FLOOR} ` +
-              `(letters ${payload.thresholds.VOTE_MARGIN_CLEAR} / ${payload.thresholds.VOTE_PROB_FLOOR})`);
+  console.log(`${thOk ? 'pass' : 'FAIL'}  digits thresholds carry their measured gate: ` +
+              `VOTE_MARGIN_CLEAR ${dth.VOTE_MARGIN_CLEAR}, VOTE_PROB_FLOOR ${dth.VOTE_PROB_FLOOR}, VOTE_PROB ${dth.VOTE_PROB} ` +
+              `(letters ${payload.thresholds.VOTE_MARGIN_CLEAR} / ${payload.thresholds.VOTE_PROB_FLOOR} / ${payload.thresholds.VOTE_PROB})`);
 }
 console.log('');
 

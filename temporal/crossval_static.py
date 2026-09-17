@@ -5,12 +5,16 @@ because every split it takes is inside one capture burst. This file is the measu
 exists as a committed script rather than a remembered figure so the README's number can be
 re-derived after the next recording session.
 
-Protocol: hold out one session, train on the rest with EXACTLY the shipped recipe
-(train_static.training_rows: strong-rule filter, jitter sigma 0.12 x4 on the training frames,
-static/v4, RF 100 trees / min leaf 5), test on every un-filtered, un-jittered frame of the
-held-out session. Filter and jitter touch TRAINING folds only -- filtering the test fold would
-score the model on the frames it finds easy, and jittering it would score copies of frames
-already being scored.
+Protocol: hold out one of the author's sessions, train on the other three PLUS the strangers
+(strangers.py: the ASLNow records and the 218-signer digit photos that are letters -- other
+people's hands, never held out here because they are never the author's) with EXACTLY the
+shipped recipe (train_static.training_rows: jitter sigma 0.12 x4 on the training frames, no
+filter, static/v4, RF 80 trees / min leaf 5), test on every un-jittered frame of the held-out
+session. Jitter touches TRAINING folds only -- jittering the test fold would score copies of
+frames already being scored. --henry-only leaves the strangers out (0.867 / 0.778 with this
+recipe; the previous release's filtered 100-tree forest measured 0.861 / 0.763);
+crossval_strangers.py holds the strangers out instead and is where the cross-signer numbers
+come from.
 
 Read the per-fold table, not just the mean. The four sessions do not cover the same letters: S1
 is the full 24-letter archive recorded months before the others, S2 is 23 letters, and S3 and S4
@@ -27,12 +31,12 @@ Uncertainty: the hold-level bootstrap resamples the 57 (session x letter) bursts
 consecutive frames of one held sign are near-duplicates, and a frame-level interval would be
 several times too narrow. Seeds move the pooled number by about +-0.005 and the S1 fold by
 +-0.01 (--seeds 3 prints the spread); two implementations of the same recipe differ by 0.01
-from the jitter RNG alone. Quote the range 0.86-0.87 / 0.76-0.78 and the CI, not the third
-decimal of one run.
+from the jitter RNG alone. Quote the seed range and the CI, not the third decimal of one run.
 
     ./.venv/bin/python temporal/crossval_static.py                 # seed 0
     ./.venv/bin/python temporal/crossval_static.py --seeds 3       # seed spread
     ./.venv/bin/python temporal/crossval_static.py --oof oof.npz   # out-of-fold posteriors
+    ./.venv/bin/python temporal/crossval_static.py --henry-only    # the one-signer forest
     ./.venv/bin/python temporal/crossval_static.py --legacy        # the retired recipe
 
 --legacy runs the previous release's recipe (static/v3, four-angle rotation augmentation, no
@@ -55,6 +59,8 @@ from sklearn.ensemble import RandomForestClassifier
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
 import train_static as T
+import strangers as ST
+import static_aug as A
 
 EXTRA = (("S2", "static_s2.npz"), ("S3", "static_s3.npz"), ("S4", "static_s4.npz"))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -121,10 +127,12 @@ def bootstrap_ci(bursts, n_boot=2000, seed=0):
     return float(np.percentile(accs, 2.5)), float(np.percentile(accs, 97.5))
 
 
-def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True):
+def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True, strangers=None, ruleset=None):
     """One leave-one-session-out pass. Returns a dict with per-fold accuracies, the pooled
-    figure, the hold-level CI, S1 macro recall, and the out-of-fold arrays."""
+    figure, the hold-level CI, S1 macro recall, and the out-of-fold arrays. `strangers` is a
+    per-class list added to every TRAINING fold (None = none); `ruleset` overrides the filter."""
     src = sessions(legacy) if src is None else src
+    ruleset = T.RULESET if ruleset is None else ruleset
     featfn = F.static_feature if legacy else T.FEATFN
     order = [CROSS_DAY] + [s for s in src if s != CROSS_DAY]
     if verbose:
@@ -142,7 +150,9 @@ def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True):
             Xtr, ytr, dropped = legacy_rows(train)
             model = RandomForestClassifier(n_estimators=400, random_state=seed, n_jobs=n_jobs)
         else:
-            Xtr, ytr, dropped = T.training_rows(train, seed=seed)
+            if strangers is not None:
+                train = ST.merge(train, strangers)
+            Xtr, ytr, dropped = T.training_rows(train, ruleset=ruleset, seed=seed)
             model = T.make_forest(seed, n_jobs=n_jobs)
         Xte, yte = test_rows(src[held][0], featfn)
         if not len(Xte):
@@ -223,22 +233,34 @@ def main():
     ap.add_argument("--oof", default=None,
                     help="write seed 0's out-of-fold per-frame posteriors here (simulate_words.py's input)")
     ap.add_argument("--n-jobs", type=int, default=4)
+    ap.add_argument("--henry-only", action="store_true",
+                    help="no strangers on the training side: the previous release's one-signer forest (0.861 / 0.763)")
+    ap.add_argument("--ruleset", default=None, choices=sorted(A.RULESETS),
+                    help="defining-geometry training filter (default: the shipped setting, none)")
     args = ap.parse_args()
 
     src = sessions(legacy=args.legacy)
+    strangers = None
     if args.legacy:
         print("LEGACY recipe: static/v3 + rotation (-12,-6,6,12) + RF400, no filter, per-frame "
-              "handedness -- the regression guard (expected pooled 0.759, S1 0.659), not the "
-              "shipped model\n")
+              "handedness, author only -- the regression guard (expected pooled 0.759, S1 0.659), "
+              "not the shipped model\n")
     else:
-        print(f"recipe: {T.FEATURE_TAG} ({T.FEATURE_DIM}-D), filter {T.RULESET!r}, jitter sigma "
+        ruleset = T.RULESET if args.ruleset is None else args.ruleset
+        if not args.henry_only:
+            strangers, sources = ST.load_strangers()
+            n_str = sum(len(P) for P in strangers)
+        print(f"recipe: {T.FEATURE_TAG} ({T.FEATURE_DIM}-D), filter {ruleset!r}, jitter sigma "
               f"{T.JITTER_SIGMA} x{T.JITTER_COPIES} on training folds only, "
-              f"RF({T.FOREST['n_estimators']}, min_samples_leaf={T.FOREST['min_samples_leaf']})\n")
+              f"RF({T.FOREST['n_estimators']}, min_samples_leaf={T.FOREST['min_samples_leaf']}), "
+              + (f"strangers on the training side: {n_str} frames from {sources}" if strangers is not None
+                 else "author's sessions only (--henry-only)") + "\n")
     runs = []
     for seed in range(args.seeds):
         if args.seeds > 1:
             print(f"--- seed {seed} ---")
-        res = run(seed=seed, legacy=args.legacy, src=src, n_jobs=args.n_jobs)
+        res = run(seed=seed, legacy=args.legacy, src=src, n_jobs=args.n_jobs,
+                  strangers=strangers, ruleset=args.ruleset)
         report(res)
         runs.append(res)
         if seed == 0 and args.oof:

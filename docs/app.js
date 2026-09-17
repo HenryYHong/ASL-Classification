@@ -456,7 +456,7 @@ function boot() {
 
   async function load() {
     try {
-      ui.loadstate.textContent = 'fetching models.json (about 12 MB, about 2 MB compressed, '
+      ui.loadstate.textContent = 'fetching models.json (about 17 MB, about 3 MB compressed, '
         + 'cached after the first time)';
       // forest.js owns the fetch, including the gzip sniffing GitHub Pages needs. A second
       // loader here would be a second implementation of the thing this project keeps being

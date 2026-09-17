@@ -322,16 +322,19 @@
       device.
     </p>
     <p class="note">
-      Trained on one signer across four sessions. Static letters, each session held out in
-      turn: 0.86&ndash;0.87 of 4,878 held-out frames (95% interval about 0.79&ndash;0.93 over
-      the 57 recorded holds), and 0.76&ndash;0.78 on the one fold recorded on a different day
-      (0.76 in the repository's own run, 0.761&ndash;0.763 over three seeds), which is the
-      number to plan around. The previous release measured 0.759 and 0.659 on the same folds.
+      Trained on one signer across four sessions plus other people's hands from two public
+      landmark sets. Static letters, each of the author's sessions held out in turn:
+      0.91 of 4,878 held-out frames (95% interval about 0.86&ndash;0.96 over the 57 recorded
+      holds), and 0.87 on the one fold recorded on a different day (0.873 in the repository's
+      own run, 0.869&ndash;0.873 over three seeds). On other people's hands the forest never
+      saw, 1,874 frames from multiple participants captured with this page's own landmarker:
+      0.79, and that is the number to plan around if you are not the author. The previous
+      release measured 0.861 and 0.763 on the author's folds and was one signer only.
       J and Z: 0.95 over 102 events (74 J/Z gestures and 28 movements) in 80 prompted items,
-      cross-validated by prompted item (the labels changed in this release, so that
+      cross-validated by prompted item (the labels changed in an earlier release, so that
       replaces rather than improves on the earlier 0.864). Accuracy varies with hand shape
-      and lighting; across days M, E, N, S and O are the least reliable (M, N, S and O under
-      every recipe tried; E under this one).
+      and lighting; across days the author's M is not read at all (a data problem with the
+      2024 recording), and on other people's hands G, R, U, D and S are the least reliable.
     </p>
     <p class="note">
       Numbers mode (experimental) reads the ASL digits 0&ndash;9 with a separate forest trained

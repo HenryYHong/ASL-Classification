@@ -144,8 +144,9 @@ def pair_distances(P):
     number misleads), adding this block took overall accuracy from 0.956 to 0.983 and M from
     0.25 to 0.85. Computing the distances in 3-D (MediaPipe supplies a z, scaled by W/H like x)
     was slightly worse on THAT split only (0.964-0.971 against 0.968-0.981 over three seeds)
-    and is neutral-to-positive leave-one-session-out: under the shipped recipe (crossval_static
-    protocol, static/v4 with z inside these norms, seeds 0-2) pooled 0.861/0.869/0.860 ->
+    and is neutral-to-positive leave-one-session-out: under the previous release's recipe
+    (crossval_static protocol on the author's sessions alone, static/v4 with z inside these
+    norms, seeds 0-2) pooled 0.861/0.869/0.860 ->
     0.871/0.874/0.864 (+0.004 to +0.010, hold-level CIs all straddling zero) and the cross-day
     fold 0.763/0.761/0.763 -> 0.783/0.795/0.786 (+0.020 to +0.034, mostly E and O); under the
     retired rotation augmentation +0.024 pooled with a paired hold-level CI of [+0.001, +0.047].

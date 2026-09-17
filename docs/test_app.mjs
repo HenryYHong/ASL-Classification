@@ -332,7 +332,7 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
     && !/watchdog\(vision\.FilesetResolver/.test(src) && !/loading the MediaPipe WASM/.test(src)
     && (src.match(/await watchdog\(/g) || []).length === 5);
   check('the load line states the real size of models.json',
-    /fetching models\.json \(about 12 MB, about 2 MB compressed, '\s*\n\s*\+ 'cached after the first time\)/.test(src)
+    /fetching models\.json \(about 17 MB, about 3 MB compressed, '\s*\n\s*\+ 'cached after the first time\)/.test(src)
     && /fetching golden\.json \(the self-check cases\)/.test(src));
   check('postLog drops keepalive above ~60 KB',
     /const KEEPALIVE_MAX_BYTES = 60 \* 1024;/.test(src)
@@ -436,27 +436,32 @@ for (const fps of [15, 30]) {
   const missing = ids.filter((id) => !new RegExp(`id="${id}"`).test(html));
   check(`all ${ids.length} element ids exist in index.html`, missing.length === 0,
     missing.length ? `missing ${missing.join(', ')}` : '');
-  // The accuracy numbers are the ones the experiments measured, quoted as ranges with the
-  // hold-level interval, and the previous release's figures are labeled as such. A page that
-  // rounds them up is the one thing the brief forbids outright.
-  check('index.html states the measured accuracies as ranges',
-    /0\.86(&ndash;|-)0\.87/.test(html) && /0\.76(&ndash;|-)0\.78/.test(html)
-    && /0\.79(&ndash;|-)0\.93/.test(html) && /one signer/i.test(html));
-  // The repository's own run beside the published range: crossval_static.py seeds 0-2 on the
-  // shipped recipe give 0.763 / 0.761 / 0.763 on the cross-day fold (temporal/features.py,
-  // pair_distances), and the J/Z figure counts events, not gestures: 102 events = 74 J/Z
-  // gestures + 28 movements over 80 prompted items (temporal/README, the motion forest's
-  // cross-validation by prompted item).
-  check('...with the repository run beside the cross-day range and the J/Z events itemized',
-    /0\.76 in the repository's own run, 0\.761(&ndash;|-)0\.763 over three seeds/.test(html)
+  // The accuracy numbers are the ones crossval_static.py / crossval_strangers.py print, with
+  // the hold-level interval, the cross-signer figure named as the one a visitor should plan
+  // around, and the previous release's figures labeled as such. A page that rounds them up is
+  // the one thing the brief forbids outright.
+  check('index.html states the measured accuracies with the interval',
+    /0\.91 of 4,878 held-out frames/.test(html) && /0\.86(&ndash;|-)0\.96/.test(html)
+    && /0\.87 on the one fold recorded on a different day/.test(html)
+    && /other people's hands from two public/.test(html));
+  // The repository's own run beside the published figure: crossval_static.py seeds 0-2 on the
+  // shipped recipe give 0.873 / 0.869 / 0.870 on the cross-day fold, and the J/Z figure counts
+  // events, not gestures: 102 events = 74 J/Z gestures + 28 movements over 80 prompted items.
+  check('...with the repository run beside the cross-day figure and the J/Z events itemized',
+    /0\.873 in the repository's\s+own run, 0\.869(&ndash;|-)0\.873 over three seeds/.test(html)
     && /J and Z: 0\.95 over 102 events \(74 J\/Z gestures and 28 movements\) in 80 prompted items/.test(html));
-  // The weak-letter list is what crossval_static.py seed 0 prints for the cross-day fold
-  // ('S1 letters below 0.6 recall: M 0.00, E 0.12, N 0.20, S 0.54, O 0.55'); E is second-worst
-  // and was missing from the page.
-  check('index.html names every cross-day letter below 0.6 recall',
-    /across days M, E, N, S and O are the least\s+reliable \(M, N, S and O under\s+every recipe tried; E under this one\)/.test(html));
+  // The cross-signer number (crossval_strangers.py: ASLNow held out, 0.790 +- 0.003) is what a
+  // visitor should plan around, and the page says so.
+  check('index.html states the cross-signer number as the one a visitor should plan around',
+    /1,874 frames from multiple participants captured with this page's own landmarker/.test(html)
+    && /0\.79, and that is the number to plan around if you are not the author/.test(html));
+  // The weak letters are the ones crossval_static.py (cross-day fold: M 0.01) and
+  // crossval_strangers.py (ASLNow held out: G, R, U, D, S) print.
+  check('index.html names the weak letters on both folds',
+    /the author's M is not read at all/.test(html)
+    && /on other people's hands G, R, U, D and S are the least reliable/.test(html));
   check('...labels the previous release\'s numbers as previous',
-    /previous release measured 0\.759 and 0\.659/.test(html)
+    /previous\s+release measured 0\.861 and 0\.763 on the author's folds and was one signer only/.test(html)
     && /replaces rather than improves on the earlier 0\.864/.test(html));
   check('index.html says fingerspelling only', /no ASL word signs, no grammar/i.test(html));
   check('index.html explains the word break, common words first',

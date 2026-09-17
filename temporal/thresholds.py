@@ -148,38 +148,23 @@ class Thresholds:
                                     # vote NEVER completes. It happened to fit at 30 fps, so the
                                     # bug was invisible live and cost 8 of 24 archive letters.
     VOTE_AGREE: float = 0.70        # fraction of votes that must agree
-    VOTE_PROB: float = 0.70         # mean winner probability, the "confident" route. UNCHANGED
-                                    # and, at the VOTE_MARGIN_CLEAR / VOTE_PROB_FLOOR below,
-                                    # inoperative: a mean winner probability of 0.70 leaves at
-                                    # most 0.30 for the runner-up, so its margin is at least
-                                    # 0.40 and the decisive route (margin >= 0.20, probability
-                                    # >= 0.50) already admits it. 0.70 and 0.80 give identical
-                                    # positive and negative tables at every grid point of the
-                                    # sweep (vote-thresholds/sweep_tables.txt), i.e. it decided
-                                    # nothing. Kept so the route still exists if
-                                    # VOTE_MARGIN_CLEAR is ever raised past 0.40 or the floor
-                                    # past 0.70. The history below explains the value.
-                                    # Raised from 0.35 once a SECOND capture session made the
-                                    # model genuinely confident on this signer. Measured over a
-                                    # live alphabet run, correct emissions scored 0.72-0.99 while
-                                    # every transitional misfire scored 0.36-0.65, so the floor
-                                    # now separates them cleanly. 0.35 was the right value for a
-                                    # one-session model that was never confident about anything;
-                                    # keeping it after fixing the data would have been tuning
-                                    # around a problem that no longer exists.
-                                    # (superseded note follows)
-                                    # -- was 0.35:
-                                    # MEASURED from 856 live holds, not carried over from the
-                                    # benchmark. The forest is trained on near-duplicate frames
-                                    # from one capture burst, so it is badly over-confident
-                                    # in-session -- mean winner probability 0.82 there against
-                                    # 0.44 live. A floor set on the in-session scale rejected
-                                    # 98% of live holds: S won 65 holds at a mean 0.35 and U won
-                                    # 34 at 0.33, both recognized correctly and both silently
-                                    # discarded. At 0.35 with the margin below, 60% of live holds
-                                    # emit and 21 of the 24 letters become reachable.
-                                    # The right long-term fix is calibrating the probabilities
-                                    # (or a second capture session), not a lower floor.
+    VOTE_PROB: float = 0.75         # mean winner probability, the "confident" route. MEASURED
+                                    # with VOTE_PROB_FLOOR below, and equal to it on purpose:
+                                    # this route admits any vote above it whatever the floor
+                                    # says, so a floor above VOTE_PROB would be a no-op. With
+                                    # the two equal, the decisive route (margin >= 0.20 and
+                                    # probability >= 0.75) is a subset of this one and the
+                                    # rule collapses to: agree >= VOTE_AGREE, margin >=
+                                    # VOTE_MARGIN, mean winner probability >= 0.75. Both
+                                    # routes are kept so the machinery still exists if the
+                                    # two values are ever separated again. History: 0.35 for
+                                    # the one-session forest (856 live holds, mean winner
+                                    # probability 0.44 live against 0.82 in-session, a floor
+                                    # on the in-session scale rejected 98% of live holds);
+                                    # 0.70 once a second session made the forest confident
+                                    # (correct live emissions 0.72-0.99, transitional
+                                    # misfires 0.36-0.65); 0.75 for the multi-signer forest,
+                                    # see VOTE_PROB_FLOOR.
     VOTE_MARGIN: float = 0.10       # the winner must always beat the runner-up by at least this
                                     # (not swept)
     # A letter may emit by EITHER route, because absolute probability and margin measure
@@ -191,76 +176,66 @@ class Thresholds:
     # ever emit it. Its margin over the runner-up was 0.14, while genuine junk (a hand mid
     # transition) won by 0.05-0.07. The margin separates them where the probability cannot.
     #
-    # The two values below were re-measured for the jitter-trained 112-D forest that ships
-    # (static/v4, sigma 0.12 x4, strong-rules filter, RF100 min_samples_leaf 5) by
-    # vote-thresholds/{02_votesim,03_negatives,04_tables,05_replay}.py. They are NOT right for
-    # the previous rotation-augmented RF400: on that forest the floor was harmless on idle (it
-    # emitted on 2 of the same 43 idle holds at 0.30) but cost 14 points of first-vote correct.
+    # The two values below are set against two committed measurements, re-run for every
+    # forest that ships: idle_gate.py (a relaxed hand must not emit) and replay_static.py
+    # (what the author's 71 held signs cost at that floor). Neither is right for a different
+    # forest: the previous rotation-augmented RF400 emitted on only 2 of the same idle holds
+    # at 0.30 while a 0.50 floor cost it 14 points of first-vote recall.
     #
-    # THE CLEAN-IDLE METRIC the floor is set against. docs/browser_log.jsonl holds 2,890 hold
-    # records from one ~2-minute live session of one signer (Tasks landmarks, the page's own
-    # segmenter). Consecutive records with gaps <= 0.2 s form 148 holds. 79 of them the page
-    # emitted on. Of the 69 it never emitted on, 26 sit within 2.5 s before or 1 s after a
-    # J/Z track record: those are the I/D LAUNCH POSES, read correctly at mean probabilities
-    # up to 1.00 and canceled by D_WAIT or by the motion emission, so they are excluded --
+    # THE CLEAN-IDLE METRIC. docs/browser_log.jsonl holds 2,890 hold records from one live
+    # session of the author on the hosted page (Tasks landmarks, the page's own segmenter).
+    # Consecutive records with gaps <= 0.2 s form 148 holds. 79 of them the page emitted on.
+    # Of the 69 it never emitted on, 26 overlap [track start - 2.5 s, track end + 1 s] of a
+    # J/Z track: those are the I/D LAUNCH POSES, read correctly at mean probabilities up to
+    # 1.00 and cancelled by D_WAIT or by the motion emission, so they are excluded --
     # counting them would call a correct read of an I a false emission. The remaining 43 are
     # the clean idle holds: 2,180 records, 2,064 four-frame votes of a relaxed hand the page
-    # was right to stay silent on (2,058 sliding four-record votes, plus 6 holds with fewer
-    # than 4 records -- sizes 1, 1, 2, 2, 2, 3 -- that are one vote each).
-    # The motion recordings' REST windows are NOT used as negatives: the signer re-forms the
-    # next item's launch I/D within about 1 s of every rest, so a vote there is mostly a
-    # correct I. The legacy single-frame rate over all 2,890 records is not this metric; it
-    # counts the page's own 79 emissions (a 2.7% floor) and the 26 launch-adjacent holds.
+    # was right to stay silent on (2,058 sliding four-record votes, plus 6 holds shorter than
+    # four records -- sizes 1, 1, 2, 2, 2, 3 -- that are one vote each). Their landmarks are
+    # committed as temporal/idle_holds.npz so the gate survives the log. The motion
+    # recordings' REST windows are NOT used as negatives: the signer re-forms the next item's
+    # launch I/D within about 1 s of every rest. Rule: any clean idle hold that emits raises
+    # the floor by 0.05 and the gate is re-run.
     #
-    # HOW THE TWO VALUES WERE SET, in two rounds on two draws of the same recipe (the jitter
-    # RNG is seeded by block content, static_aug.content_rng, so a re-implementation is a
-    # different draw). Round one, the design sweep on the candidate draw, chose 0.20 / 0.50:
-    # clean idle 0 of 43 holds, 0 of 2,064 votes (the previous forest at its own 0.12 / 0.30:
-    # 2 of 43), the floor 0.04 above that draw's most confident clean-idle vote (max 0.46, p90
-    # 0.36, of the votes that pass agree and margin), 63 of the 79 live page-emitted holds
-    # still emitting. Round two re-ran the same gate on the COMMITTED model_static.p before
-    # shipping, per the rule that any clean-idle hold emitting raises the floor by 0.05: at
-    # 0.50 this draw emitted on 1 of 43 -- six Q votes on one relaxed hold, max mean
-    # probability 0.509, 0.009 over the floor -- so the floor is 0.55. At 0.55: 0 of 43 holds,
-    # 0 of 2,064 votes, 0.041 above this forest's most confident clean-idle vote (sweep on
-    # this draw: 0.40 -> 3/43, 0.45 -> 1/43, 0.50 -> 1/43, 0.55 -> 0/43, 0.60 -> 0/43). The
-    # floor sits within 0.05 of a relaxed hand on both draws, so a different pose or camera
-    # could cross it: re-measure after the next live session.
+    # ROUND ONE, the one-signer forest (static/v4, jitter, strong filter, RF100): the design
+    # sweep chose 0.20 / 0.50 (0 of 43 idle holds on the candidate draw, first vote 0.817 /
+    # 0.056 identical to the old 0.12 / 0.30); the committed draw emitted on 1 of 43 at 0.50
+    # (six Q votes at a mean probability of 0.509), so it shipped at 0.55: 0 of 43, replay
+    # exactly the right letter 65/71, first emission wrong 3/71, silent 2/71, 4 wrong letters,
+    # cross-day fold 19/24, median first-emission latency 0.46 s.
     #
-    # Cost, on the 71 held-out holds of the four sessions (leave-one-session-out fold models,
-    # 4-frame first vote). Candidate draw at 0.20 / 0.50: correct 0.817 / wrong 0.056,
-    # IDENTICAL to that forest at the old 0.12 / 0.30 -- the idle emissions all sat below 0.50
-    # and the correct first votes all above it (min 0.53, p5 0.58); its end-to-end replay
-    # (real timestamps, one fresh Segmenter per hold) gave exactly the right letter 64/71
-    # (0.901; old rule 63/71), first emission wrong 4/71, silent 1/71, cross-day fold 18/24.
-    # Committed draw, the numbers that describe what ships: first vote correct 57 -> 56 of 71
-    # for 0.50 -> 0.55, wrong 2/71 and silent 2/71 unchanged, first emitted letter right 65/71
-    # unchanged; end-to-end replay at 0.55 exactly the right letter 65/71 (0.915), first
-    # emission wrong 3/71 (2/71 at 0.50), silent 2/71 either way (S1-E and S2-K; K is silent
-    # under every model), letter among emissions 66/71, 0 track starts, median first-emission
-    # latency 0.46 s, p90 0.96 s, cross-day fold (S1, 24 holds) exact 19/24. Of the 79 holds
-    # the page emitted on live, 59 (0.747) still emit at 0.55 (62 at 0.50 with this draw);
-    # live Tasks-landmark confidences run lower than leave-one-session-out ones, and that
-    # 59/79 is the number to watch.
+    # ROUND TWO, the multi-signer forest that ships (other people's hands on the training
+    # side, strangers.py; no filter; RF80). It is far more confident on the author's held
+    # signs -- and on a relaxed hand, which it reads as a loose G: at 0.55 it emits on 5 of
+    # the 43 idle holds (42 votes, every one a G; max mean probability 0.695), at 0.65 on 2,
+    # at 0.70 on none with 0.005 to spare, at 0.75 on none with 0.055 to spare. Filtering
+    # the strangers' G frames by the G rule does not remove it (2 of 43 at 0.55), and a REST
+    # class trained on the motion recordings' rest windows catches only 5% of the idle frames
+    # (a hand relaxed mid-recording is not a hand idling at a laptop), so the floor moved.
+    # What 0.75 costs, from replay_static.py with the same forest's held-out fold models and
+    # VOTE_PROB raised to match: exactly the right letter 64/71 (65 at 0.55 and 0.70, 63 at
+    # 0.80), first emission wrong 1/71, ONE wrong letter emitted in 71 holds (the previous
+    # forest: 4), silent 6/71 (E and N once each on the cross-day fold, S2-K, which is silent
+    # under every forest, and the three S3 D holds, which are silent at 0.55 too), cross-day
+    # fold exact 21/24 (previous forest 19/24), median latency 0.46 s, 0 track starts.
+    # Silence on a hold the forest is unsure of is the design; a wrong letter is the defect.
+    # The floor sits within 0.06 of a relaxed hand, so a different pose or camera could cross
+    # it: re-run idle_gate.py after the next live session. On strangers (crossval_strangers.py,
+    # ASLNow held out, a forest that never saw that set) the rule emits on 0.46 of single
+    # frames and is right on 0.962 of those (0.65 / 0.914 at the old 0.55 floor); a held sign
+    # offers many windows, a record offers one, so that is a floor on what a visitor sees.
     #
-    # Alternatives measured and rejected (candidate draw). FLOOR 0.40 leaves 3 of 43 idle
-    # holds (0.070) emitting; 0.60 costs about 10 points of first-vote correct (0.817 -> 0.718
-    # at 0.12 / 0.60, 0.704 at 0.40 / 0.60) and raises silent holds in the replay (1/71 ->
-    # 5/71) for nothing more on idle. MARGIN_CLEAR 0.30 costs correct first votes (0.817 ->
-    # 0.803) and buys nothing on an idle hand already at zero; 0.20 rather than 0.12 costs
-    # this forest nothing and removes one wrong first vote in 71 for the 101-D jitter
-    # forests. A unanimity route (agree == 1.0 over >= 8 votes, margin >= VOTE_MARGIN) was
-    # rejected: at 24 fps the 0.30 s window holds 6-7 votes so it almost never fires, and
-    # where it can it adds nothing on the 71 holds (0.817 / 0.817) while raising non-launch
-    # REST emissions 0.012 -> 0.061 per vote and 0.025 -> 0.083 per hold -- a unanimous
-    # low-probability vote is exactly a relaxed hand read consistently as the wrong letter.
-    VOTE_MARGIN_CLEAR: float = 0.20 # MEASURED, was 0.12 (see above)
-    VOTE_PROB_FLOOR: float = 0.55   # MEASURED, was 0.30, then 0.50 on the candidate draw and
-                                    # 0.55 on the committed one (see above); the knob that
-                                    # separates a held letter from an idle hand under the
-                                    # jitter-trained forest. The margin does not. The word
-                                    # layer's constants below were swept at 0.50 and only
-                                    # the point configuration was re-measured at 0.55.
+    # Alternatives measured and rejected. MARGIN_CLEAR 0.30 buys nothing on an idle hand at any
+    # floor and costs correct first votes; a unanimity route (agree == 1.0 over >= 8 votes)
+    # almost never fires at 24 fps (6-7 votes in the 0.30 s window) and, where it can, raises
+    # rest-phase emissions -- a unanimous low-probability vote is exactly a relaxed hand read
+    # consistently as the wrong letter.
+    VOTE_MARGIN_CLEAR: float = 0.20 # MEASURED, was 0.12; inert while VOTE_PROB_FLOOR == VOTE_PROB
+    VOTE_PROB_FLOOR: float = 0.75   # MEASURED, was 0.30, then 0.50 / 0.55 for the one-signer
+                                    # forest, 0.75 for the multi-signer one (see above). The
+                                    # knob that separates a held letter from an idle hand;
+                                    # the margin does not. The word layer's constants below
+                                    # were swept at 0.50 and re-measured at this floor.
     HOLD_SETTLE: float = 0.25       # seconds of stillness required to enter HOLD. 0.15 was too
                                     # permissive once a second session raised confidence: a brief
                                     # pause while moving between letters counted as a hold, and
@@ -363,45 +338,46 @@ class Thresholds:
                                     # hand-down rests between prompts start at 1.008s and cluster
                                     # at 1.5-5s. 1.20 clears every observed dropout and still
                                     # falls under the shortest rest anyone actually took.
-    WORD_MIN_RATIO: float = 0.10    # a dictionary word is offered only if the frames make it at
+    WORD_MIN_RATIO: float = 0.20    # a dictionary word is offered only if the frames make it at
                                     # least this likely relative to the letters actually read.
                                     # The emitted string is the per-position argmax, so it always
                                     # scores highest; this asks how far behind a real word is
-                                    # allowed to be before the hint is worth showing. Was 0.02,
-                                    # tuned at the old 0.12 / 0.30 gate. 0.10 / 10 / 2.5 come
-                                    # from a 112-configuration sweep of (min ratio, dominance,
-                                    # prior) -- min ratio {0.02, 0.05, 0.1, 0.2} x dominance
-                                    # {3, 5, 10, 20} x prior {0, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0},
-                                    # which temporal/simulate_words.py --sweep runs by default,
-                                    # so the committed script reproduces the table -- on
-                                    # leave-one-session-out letter posteriors at 0.20 / 0.50,
-                                    # before VOTE_PROB_FLOOR was raised to 0.55 for the
-                                    # committed forest; the grid has not been re-run at 0.55.
-                                    # No cell won every table (consecutive-window retries:
-                                    # (0.10, 20, 3.0) and (0.20, 3, 3.0); fresh-hold retries:
-                                    # (0.10, 5, 2.5)); (0.10, 10, 2.5) is within 0.015 utility
-                                    # (recovered - C x shown-wrong, C in {2, 3}, under one
-                                    # seed sd of ~0.01) of the best cell in every table and
-                                    # was chosen as the robust compromise. At 0.20 / 0.50 the
-                                    # letters that survive are more confident than at 0.12 /
-                                    # 0.30, so the layer can demand a closer candidate.
-    WORD_DOMINANCE: float = 10.0    # ...and only if that word is this many times likelier than
-                                    # the next candidate, prior included. The list is now the
-                                    # 34.7k most frequent Google Books words plus proper names
-                                    # (was 150k Webster headwords), so fewer strings have a
-                                    # same-length neighbor, but a word field that is still
-                                    # ambiguous after the prior should abstain rather than
-                                    # guess. Kept at 10: the sweep's per-table bests used 3,
-                                    # 5 and 20, and 10 is within 0.015 of each (WORD_MIN_RATIO).
-    WORD_PRIOR: float = 2.5         # weight of the rank prior: each candidate's log-likelihood
+                                    # allowed to be before the hint is worth showing. Was 0.02
+                                    # at the old 0.12 / 0.30 gate, 0.10 for the one-signer
+                                    # forest at 0.20 / 0.55. The three word constants are swept
+                                    # together by temporal/simulate_words.py --sweep (min ratio
+                                    # {0.02, 0.05, 0.1, 0.2} x dominance {3, 5, 10, 20} x prior
+                                    # {0, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0}, plus an extension to
+                                    # min ratio 0.5 and prior 4.0 once the optimum sat on the
+                                    # grid's edge) on the multi-signer forest's leave-one-
+                                    # session-out posteriors at the shipped 0.75 gate, scoring
+                                    # recovered - C x shown-wrong (C in {2, 3}) over common
+                                    # words, proper names and rare words. The tables want a
+                                    # stronger prior than before (3.0 in the fresh-hold retry
+                                    # model, 4.0 in the same-hold one) and a tighter ratio;
+                                    # dominance barely matters once the prior is that strong.
+                                    # (0.20, 3, 3.0) is within 0.01 utility of the fresh-hold
+                                    # best and within 0.025 of the same-hold best, and against
+                                    # the previous (0.10, 10, 2.5) on the same posteriors it
+                                    # trades one point of recovered words for hint precision
+                                    # 0.76 -> 0.85 (same-hold) and 0.85 -> 0.90 (fresh-hold)
+                                    # and 18% fewer wrong "X is a word" confirmations.
+    WORD_DOMINANCE: float = 3.0     # ...and only if that word is this many times likelier than
+                                    # the next candidate, prior included. Was 10 with a weaker
+                                    # prior; with WORD_PRIOR at 3.0 the prior already separates
+                                    # a common word from its rarer neighbors by far more than
+                                    # this, and 3, 5, 10 and 20 score within 0.01 of each other
+                                    # in every table. A field that is still close after the
+                                    # prior abstains rather than guesses.
+    WORD_PRIOR: float = 3.0         # weight of the rank prior: each candidate's log-likelihood
                                     # gets WORD_PRIOR * log-prior added, where the prior is its
                                     # position in the frequency-ordered list (the file order of
                                     # docs/words.txt IS the prior; it must never be sorted).
-                                    # 0 would score every word equally; the sweep's table bests
-                                    # sit at 2.5-3.0 (3.0 wins the consecutive tables, 2.5 the
-                                    # fresh-hold ones) and 2.5 is the compromise (see
-                                    # WORD_MIN_RATIO), favoring common words over rare ones
-                                    # that happen to be a closer letter-by-letter fit.
+                                    # 0 would score every word equally. The multi-signer forest
+                                    # is more confident on a misread letter than the one-signer
+                                    # forest was, so the frames argue harder for a wrong
+                                    # spelling and the prior has to argue back harder: 2.5
+                                    # before, 3.0 now (see WORD_MIN_RATIO).
 
     # --- tier 2 (co-articulated gestures with no preceding pause) -----------------------
     TIER2_ENABLED: bool = False     # ships disabled; enable only once its false-fire rate on
@@ -445,16 +421,16 @@ NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN", "V_SMO
 #: guesses: temporal/simulate_words.py spells 2,000 frequency-weighted common words, 600 proper
 #: names and 1,000 rare words from random held-out holds of the leave-one-session-out letter
 #: posteriors (one fresh Segmenter vote per letter, the vote gate above, 5 seeds) and scores
-#: what the layer would show. At the shipped gate (VOTE_MARGIN_CLEAR 0.20 / VOTE_PROB_FLOOR
-#: 0.55) and constants, on the committed forest's out-of-fold posteriors (make_oof.py, seed
-#: 0): common words recovered 0.44 / shown wrong 0.07 when a misread letter is retried from
-#: consecutive windows of the same hold (3 tries), and 0.63 / 0.06 when every retry is a
-#: fresh hold (names 0.31/0.07 and 0.49/0.04, rare 0.18/0.05 and 0.34/0.03); the two retry
-#: models bracket what a signer does. The constants were swept at 0.20 / 0.50, where the same
-#: run gives 0.48 / 0.07 and 0.68 / 0.05: the floor raise costs the simulator's random-window
-#: retries 0.04-0.06 recovered while the real-segmenter replay of the same 71 holds is
-#: unchanged at 65/71 exact. That is a simulator of the segmenter, not a recording of spelled
-#: words.
+#: what the layer would show. At the shipped gate (mean winner probability >= 0.75) and
+#: constants, on the multi-signer forest's out-of-fold posteriors (make_oof.py, seed 0):
+#: common words recovered 0.42 / shown wrong 0.08 when a misread letter is retried from
+#: consecutive windows of the same hold (3 tries), and 0.66 / 0.05 when every retry is a
+#: fresh hold (names 0.27/0.06 and 0.54/0.03, rare 0.14/0.05 and 0.36/0.03; hint precision
+#: 0.83 and 0.90 on common words); the two retry models bracket what a signer does. The
+#: previous forest and constants at their 0.55 floor gave 0.44 / 0.07 and 0.63 / 0.06: the
+#: higher floor drops more letters in the same-hold model, which no hint can repair, while
+#: the more confident forest recovers more in the fresh-hold one. That is a simulator of the
+#: segmenter, not a recording of spelled words.
 #: A session of real words with their intended spellings written down is still the missing
 #: measurement -- the same discipline that retired the pre-data guesses at P_EMIT and T_MAX --
 #: so nothing is listed here, and nothing about the word layer is claimed beyond the simulation.
@@ -492,7 +468,7 @@ DEFAULT = Thresholds()
 #: what makes the proxy weak evidence. One spurious digit per six idle holds is still high:
 #: duplicate suppression bounds it to one per hand-raise, and the page says so. Nothing here
 #: was verified on the author's hand signing a digit; recording those is the first follow-up.
-DIGITS_OVERRIDES = {"VOTE_MARGIN_CLEAR": 0.40, "VOTE_PROB_FLOOR": 0.60}
+DIGITS_OVERRIDES = {"VOTE_MARGIN_CLEAR": 0.40, "VOTE_PROB_FLOOR": 0.60, "VOTE_PROB": 0.70}
 
 
 def digits_thresholds(base=None):

@@ -18,7 +18,7 @@
 // The prior is what breaks ties. Without it (the previous layer, a 150k-entry Webster list with
 // no frequencies) almost every letter string had a same-length neighbor and a close field had
 // to abstain; with it, THE (rank 1) outranks THO (rank 5,235 in the shipped list) by
-// WORD_PRIOR * ln(5235) = 2.5 * ln(5235), about 21 nats, before a single frame is looked at.
+// WORD_PRIOR * ln(5235) = 3.0 * ln(5235), about 26 nats, before a single frame is looked at.
 // WORD_MIN_RATIO bounds how far the prior may go toward a HINT: a hint can never be a word the
 // frames make less than WORD_MIN_RATIO as likely as the letters actually read, whatever its
 // rank. It does not restore an exact reading the prior has outranked: with FLOOR 1e-4 one

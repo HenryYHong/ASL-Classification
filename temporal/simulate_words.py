@@ -61,13 +61,16 @@ Reported per set: read-ok (the emitted string equals the target), exact ok/wrong
 silent-wrong (misread and nothing shown), recovered = (exact ok + hint ok)/n, shown-wrong =
 (exact wrong + hint wrong)/n, hint precision and recall (recall over misread words).
 
-Measured on the shipped forest's out-of-fold posteriors (crossval_static.py seed 0) at the
-shipped gate (VOTE_MARGIN_CLEAR 0.20 / VOTE_PROB_FLOOR 0.55, i.e. thresholds.py DEFAULT, the
-gate printed on the '# gate' line) and constants (WORD_MIN_RATIO 0.10, WORD_DOMINANCE 10,
-WORD_PRIOR 2.5), 5 seeds: common recovered / shown wrong 0.439 / 0.074 with consecutive-window
-retries and 0.625 / 0.057 with fresh-hold retries (names 0.307/0.068 and 0.494/0.044, rare
-0.181/0.047 and 0.344/0.034) -- the numbers the README quotes, re-derived by the two commands
-above. The constants were swept at 0.20 / 0.50, the floor before the idle-gate re-measurement
+Measured on the shipped forest's out-of-fold posteriors (crossval_static.py seed 0, strangers
+on the training side) at the shipped gate (mean winner probability >= 0.75, i.e. thresholds.py
+DEFAULT, the gate printed on the '# gate' line) and constants (WORD_MIN_RATIO 0.2,
+WORD_DOMINANCE 3, WORD_PRIOR 3.0), 5 seeds: common recovered / shown wrong 0.428 / 0.079 with
+consecutive-window retries and 0.658 / 0.053 with fresh-hold retries (names 0.272/0.060 and
+0.541/0.033, rare 0.138/0.050 and 0.364/0.030; hint precision 0.83 and 0.90 on common words)
+-- the numbers the README quotes, re-derived by the two commands above. The constants come
+from --sweep on the same posteriors at this gate, extended to min ratio 0.5 and prior 4.0 once
+the optimum sat on the default grid's edge. The previous forest's constants (0.10 / 10 / 2.5)
+were swept at 0.20 / 0.50, the floor before the idle-gate re-measurement
 raised it (thresholds.py VOTE_PROB_FLOOR); at that gate the same OOF gives common 0.477/0.072
 and 0.681/0.053 (--thresholds with a {"VOTE_PROB_FLOOR": 0.50} dict reproduces them). The
 floor raise costs the simulator 0.04-0.06 recovered because its retries are random 4-frame

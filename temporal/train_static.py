@@ -1,29 +1,46 @@
 """Train the 24-class static-letter forest that ships (model_static.p).
 
-What ships, and why each piece is there (every number is leave-one-session-out over the four
-sessions, 4,878 held-out frames, from crossval_static.py -- the only protocol that measures
-generalization here):
+What ships, and why each piece is there. Every number is leave-one-session-out over the
+author's four sessions (4,878 held-out frames, crossval_static.py), or one of the two
+cross-signer tests in crossval_strangers.py -- the only protocols that measure generalization
+here:
 
-  feature   static/v4 (features.static_feature_v4, 112-D): the 101-D palm-normalized static/v3
-            vector plus an 11-value thumb block. The letters the 101-D vector confuses are the
-            fists (A, E, M, N, S, T) and D/X, which differ in where the thumb sits.
-  filter    static_aug.filter_training(ruleset="strong"): training frames that violate their
-            own letter's defining-geometry rule are dropped for {X, G, Q, U, V, K, R, P, D};
-            137 of 4,878 frames. Test folds are never filtered.
-  jitter    static_aug.jitter_frames(sigma 0.12 palm units, 4 copies + originals) on TRAINING
-            frames only, re-featurized. The single largest gain: +0.03 pooled / +0.07 on the
-            cross-day fold on top of the filter (0.830 / 0.690 -> 0.861 / 0.763), +0.09 /
-            +0.14 without it (0.781 / 0.650 -> 0.874 / 0.790; static_aug.py has the 2x2).
-            The +0.10 / +0.10 over the previous forest is the whole recipe, not jitter's
-            alone. The rotation augmentation it replaces lowered the pooled number
-            (0.782 -> 0.759) and was only ever justified by within-session confidence.
-  forest    RandomForestClassifier(n_estimators=100, min_samples_leaf=5, max_features="sqrt",
-            random_state=0). Larger forests (400 trees, leaf 1) score the same and are 3-6x
-            the nodes, and every node is shipped to the browser inside models.json.
+  feature    static/v4 (features.static_feature_v4, 112-D): the 101-D palm-normalized
+             static/v3 vector plus an 11-value thumb block. The letters the 101-D vector
+             confuses are the fists (A, E, M, N, S, T) and D/X, which differ in where the
+             thumb sits.
+  data       the author's four sessions PLUS other people's hands (strangers.py): the ASLNow
+             records (all 24 letters, multiple participants, captured with the browser's own
+             landmarker) and the 218-signer digit photos whose handshape is a letter (0/O,
+             2/V, 6/W, 9/F). This is the largest gain in the project: on the author's own
+             unseen day the cross-day fold goes 0.778 -> 0.873 and the pooled figure 0.867 ->
+             0.913 (same recipe, strangers out vs in), because the strangers teach invariances
+             that transfer; on strangers the forest goes from reading one person to reading
+             people (crossval_strangers.py: held-out ASLNow 0.79, held-out 218-signer O/V/W/F
+             0.93 where the one-signer forest read V at 0.17, ASLNow fifths 0.95).
+             --no-strangers trains the one-signer version of this recipe (0.867 / 0.778); the
+             previous release's forest, with its geometry filter and 100 trees, measured
+             0.861 / 0.763.
+  jitter     static_aug.jitter_frames(sigma 0.12 palm units, 4 copies + originals) on
+             TRAINING frames only, re-featurized. Before the strangers this was the largest
+             lever (+0.09 pooled / +0.14 cross-day over no augmentation on the author alone).
+             The rotation augmentation it replaced lowered the pooled number (0.782 -> 0.759)
+             and was only ever justified by within-session confidence.
+  no filter  static_aug.filter_training(ruleset="strong") dropped 137 of the author's frames
+             that violated their letter's defining geometry (a near-straight X, a G with an
+             extended middle finger). Its thresholds were set on one hand: applied to the
+             strangers it discards half their X, P and R frames, and with strangers in the
+             training set it costs on every axis (ASLNow fifths 0.945 -> 0.903; three seeds).
+             RULESET is "none"; --ruleset strong is kept for the ablation.
+  forest     RandomForestClassifier(n_estimators=80, min_samples_leaf=5, max_features="sqrt",
+             random_state=0): about 200k nodes, every one shipped to the browser inside
+             models.json. 100 trees score the same at 250k nodes; 60 trees the same at 150k
+             but leave one relaxed-hand hold above every vote floor (thresholds.py).
 
-Together: pooled 0.86-0.87, cross-day (S1 held out) 0.76-0.78, against 0.759 / 0.659 for the
-previous rotation-augmented 101-D forest. Two implementations of the same recipe differ by
-0.01 from the jitter RNG alone, so quote the range and the hold-level CI, not a third decimal.
+The idle-hand check in idle_gate.py and the hold replay in replay_static.py are the two
+runtime measurements a retrained forest must pass before models.json is re-exported; the
+vote floor in thresholds.py was raised to 0.75 for this forest because it reads a relaxed
+hand as a loose G at 0.55-0.70.
 
 The ablation printed first is older and narrower: it shows why the feature divides by palm
 size at all. The original 42-D feature subtracted min(x)/min(y) but never divided by hand
@@ -44,6 +61,7 @@ from sklearn.metrics import accuracy_score
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import features as F
 import static_aug as A
+import strangers as ST
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEQ = os.path.join(HERE, "static_sequences.npz")
@@ -55,9 +73,9 @@ W, H = 1920, 1080
 #: shipped forest can never drift apart silently.
 FEATURE_TAG = "static/v4"
 FEATFN, FEATURE_DIM = F.static_feature_for(FEATURE_TAG)
-RULESET = "strong"
+RULESET = "none"
 JITTER_SIGMA, JITTER_COPIES = 0.12, 4
-FOREST = dict(n_estimators=100, min_samples_leaf=5, max_features="sqrt")
+FOREST = dict(n_estimators=80, min_samples_leaf=5, max_features="sqrt")
 
 #: Frames of one letter more than this many seconds apart belong to different holds (the
 #: signer dropped the hand and re-formed the letter). Used for the hold ids the OOF carries.
@@ -264,6 +282,10 @@ def main():
                          "A bare file name is also looked up under temporal/.")
     ap.add_argument("--seed", type=int, default=0, help="forest random_state and jitter seed")
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--no-strangers", action="store_true",
+                    help="train on the author's sessions only (the previous release's data)")
+    ap.add_argument("--ruleset", default=RULESET, choices=sorted(A.RULESETS),
+                    help="defining-geometry training filter; the shipped forest uses none")
     args = ap.parse_args()
 
     per_class = load()
@@ -283,6 +305,12 @@ def main():
                      for c, P in enumerate(per_class)]
     n_frames = sum(len(P) for P in per_class)
     tr, te = contiguous_split(per_class)
+    stranger_sources, n_strangers = [], 0
+    if not args.no_strangers:
+        strangers, stranger_sources = ST.load_strangers()
+        n_strangers = sum(len(P) for P in strangers)
+        print(f"strangers: {n_strangers} frames from {stranger_sources} -- "
+              + ", ".join(f"{LETTERS[c]}={len(P)}" for c, P in enumerate(strangers) if len(P)))
 
     print("=== scale-robustness ablation (contiguous per-class split) ===")
     print("test landmarks rescaled about the hand centroid; training never sees the rescale\n")
@@ -301,16 +329,19 @@ def main():
           f"   {FEATURE_TAG} spread: {max(rows['shipped']) - min(rows['shipped']):.3f}")
 
     # Ship a model trained on everything; the split above exists to characterize, not to select.
-    Xall, yall, dropped = training_rows(per_class, seed=args.seed)
-    print(f"\ntraining on {len(Xall)} rows: {n_frames} frames from {len(sessions)} sessions, "
-          f"{dropped} dropped by the {RULESET!r} rules, x{1 + JITTER_COPIES} with jitter "
-          f"sigma {JITTER_SIGMA} (originals kept), {FEATURE_DIM}-D {FEATURE_TAG}")
+    train = ST.merge(per_class, strangers) if not args.no_strangers else per_class
+    Xall, yall, dropped = training_rows(train, ruleset=args.ruleset, seed=args.seed)
+    print(f"\ntraining on {len(Xall)} rows: {n_frames} frames from {len(sessions)} sessions"
+          f" + {n_strangers} stranger frames, {dropped} dropped by the {args.ruleset!r} rules, "
+          f"x{1 + JITTER_COPIES} with jitter sigma {JITTER_SIGMA} (originals kept), "
+          f"{FEATURE_DIM}-D {FEATURE_TAG}")
     model = make_forest(args.seed).fit(Xall, yall)
     assert list(model.classes_) == list(range(len(LETTERS))), \
         "a letter has no training frame; the segmenter indexes classes by position"
     blob = {"model": model, "classes": LETTERS, "feature": FEATURE_TAG,
             "aspect": [W, H], "n_train": int(len(Xall)), "n_frames": int(n_frames),
-            "frames_dropped": int(dropped), "filter": RULESET,
+            "frames_dropped": int(dropped), "filter": args.ruleset,
+            "strangers": stranger_sources, "n_stranger_frames": int(n_strangers),
             "augment": {"kind": "jitter", "sigma_palm": JITTER_SIGMA, "copies": JITTER_COPIES,
                         "originals_kept": True, "rng": "static_aug.content_rng", "seed": args.seed},
             "forest": dict(FOREST, random_state=args.seed), "sessions": sessions}

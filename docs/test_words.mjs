@@ -18,12 +18,13 @@ import { buildIndex, closestWord, scoreWord, posteriorsFor, collapse, collapseRe
          HINT_MIN_LEN } from './words.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// The constants the page reads from models.json (thresholds.py: WORD_MIN_RATIO 0.10,
-// WORD_DOMINANCE 10, WORD_PRIOR 2.5); pinned here so the tests are about the algorithm, not
-// about whatever the export currently carries. The models.json block at the end checks that
-// the export agrees with these.
+// TH: fixed constants for the algorithm tests on the synthetic list, so those tests are about
+// the mechanics and their worked numbers stay true whatever ships (they are the previous
+// release's values). SHIPPED: what thresholds.py carries now (WORD_MIN_RATIO 0.2,
+// WORD_DOMINANCE 3, WORD_PRIOR 3.0, swept on the multi-signer forest at the 0.75 gate); the
+// shipped-list block uses it, and the models.json block checks the export agrees with it.
 const TH = { WORD_MIN_RATIO: 0.10, WORD_DOMINANCE: 10, WORD_PRIOR: 2.5 };
-const SHIPPED = { WORD_MIN_RATIO: 0.10, WORD_DOMINANCE: 10, WORD_PRIOR: 2.5 };
+const SHIPPED = { WORD_MIN_RATIO: 0.2, WORD_DOMINANCE: 3, WORD_PRIOR: 3.0 };
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -167,34 +168,34 @@ if (fs.existsSync(wordsPath)) {
   check('the two-letter bucket is the curated set only', !real.has('de') && !real.has('et') && real.has('ok'));
   // The demo spells A B C H E N R Y J Z, which is not a word in any list. Whatever the layer
   // does with it, it must not claim it is one.
-  const demo = closestWord('ABCHENRYJZ', certain('abchenryjz'), real, TH);
+  const demo = closestWord('ABCHENRYJZ', certain('abchenryjz'), real, SHIPPED);
   check('the demo string is not called a word', demo.reason === 'unlikely' && demo.word === null,
         `reason=${demo.reason}`);
-  // BEEN is rank 42 and BEN rank 1025: 2.5*ln(1025/42) = 8.0 nats. Read BEN, the page says BEEN.
-  verdict('BEN is hinted to BEEN', 'BEN', certain('ben'), real, TH, 'hint', 'been');
-  // GOOD (123) and GOD (163): 2.5*ln(163/123) = 0.7 nats, within the bar; GOD stays GOD.
-  verdict('GOD stays GOD', 'GOD', certain('god'), real, TH, 'exact', 'god');
+  // BEEN is rank 42 and BEN rank 1025: 3.0*ln(1025/42) = 9.6 nats. Read BEN, the page says BEEN.
+  verdict('BEN is hinted to BEEN', 'BEN', certain('ben'), real, SHIPPED, 'hint', 'been');
+  // GOOD (123) and GOD (163): 3.0*ln(163/123) = 0.85 nats, under ln(3) = 1.10; GOD stays GOD.
+  verdict('GOD stays GOD', 'GOD', certain('god'), real, SHIPPED, 'exact', 'god');
   // A misread of the demo name: y read as x with y close behind.
   verdict('HENRX is hinted to HENRY', 'HENRX',
-          [...certain('henr'), dist({ x: 0.5, y: 0.4 })], real, TH, 'hint', 'henry');
+          [...certain('henr'), dist({ x: 0.5, y: 0.4 })], real, SHIPPED, 'hint', 'henry');
   // The header's worked example is tied to the file it describes: THO sits at rank 5,235, so
-  // THE outranks it by 2.5 * ln(5235) = 21.4 nats of prior. A rebuilt list moves the rank and
+  // THE outranks it by 3.0 * ln(5235) = 25.7 nats of prior. A rebuilt list moves the rank and
   // this says so before the comment goes stale.
   const tho = real.byLength(3).find((e) => e.word === 'tho');
   check('THO is at rank 5,235, as words.js says (header guard)',
         Boolean(tho) && Math.abs(Math.exp(tho.logRank) - 5235) < 0.5
-        && Math.abs(2.5 * tho.logRank - 21.4) < 0.1,
-        tho ? `rank ${Math.exp(tho.logRank).toFixed(0)}, prior ${(2.5 * tho.logRank).toFixed(2)} nats` : 'no tho');
+        && Math.abs(SHIPPED.WORD_PRIOR * tho.logRank - 25.7) < 0.1,
+        tho ? `rank ${Math.exp(tho.logRank).toFixed(0)}, prior ${(SHIPPED.WORD_PRIOR * tho.logRank).toFixed(2)} nats` : 'no tho');
   // The policy, pinned rather than accidental: a listed reading that a rank-1 neighbor
   // outranks by more than the frames can recover (one position at FLOOR is 9.2 nats; THE is
-  // 21 nats ahead of THO, 22 ahead of TIE at rank 5,513) loses its exact, and the neighbor then
+  // 26 nats ahead of THO, 26 ahead of TIE at rank 5,513) loses its exact, and the neighbor then
   // fails WORD_MIN_RATIO, so the page shows nothing rather than confirm a probable misread.
   // The reading is not restored on purpose: the same route is what keeps AND-read-as-AD from
   // being announced as a word (words.js header).
-  verdict('a rare word a common neighbor outranks is silenced, not confirmed', 'TIE', certain('tie'), real, TH,
+  verdict('a rare word a common neighbor outranks is silenced, not confirmed', 'TIE', certain('tie'), real, SHIPPED,
           'unlikely');
   verdict('...even with the neighbor\'s letter ruled out by the frames', 'THO',
-          [dist({ t: 0.99 }), dist({ h: 0.99 }), dist({ o: 0.99, e: 0.001 })], real, TH, 'unlikely');
+          [dist({ t: 0.99 }), dist({ h: 0.99 }), dist({ o: 0.99, e: 0.001 })], real, SHIPPED, 'unlikely');
 } else {
   console.log('skip  words.txt not built (run python3 docs/build_words.py)');
 }
@@ -220,7 +221,7 @@ if (fs.existsSync(wordsPath)) {
     check('models.json carries finite WORD_MIN_RATIO / WORD_DOMINANCE / WORD_PRIOR',
           names.every((k) => Number.isFinite(th[k])),
           names.map((k) => `${k}=${th[k]}`).join(' '));
-    check('...equal to thresholds.py (0.10 / 10 / 2.5)',
+    check('...equal to thresholds.py (0.2 / 3 / 3.0)',
           names.every((k) => Math.abs(th[k] - SHIPPED[k]) < 1e-12),
           names.map((k) => `${k}=${th[k]}`).join(' '));
     if (fs.existsSync(wordsPath)) {
