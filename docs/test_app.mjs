@@ -331,8 +331,8 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
     && /await watchdog\(createLandmarker\(vision, fileset\),\s*\n\s*'fetching the MediaPipe WASM from cdn\.jsdelivr\.net or the hand '\s*\n\s*\+ 'landmarker model from storage\.googleapis\.com'\)/.test(src)
     && !/watchdog\(vision\.FilesetResolver/.test(src) && !/loading the MediaPipe WASM/.test(src)
     && (src.match(/await watchdog\(/g) || []).length === 5);
-  // 1,183,438 B of models.bin.gz + 982 B of models.meta.json under Pages' own gzip = 1,184,420 B
-  // on the wire, measured on the committed export; models.json would be 3,703,069 B at gzip -5.
+  // 1,183,438 B of models.bin.gz + 965 B of models.meta.json under Pages' own gzip = 1,184,403 B
+  // on the wire, measured on the committed export; models.json would be 3,703,057 B at gzip -5.
   check('the load line states the real size of what the page fetches',
     /fetching models\.bin\.gz and models\.meta\.json \(about 1\.18 MB, '\s*\n\s*\+ 'already compressed, cached after the first time\)/.test(src)
     && /fetching golden\.json \(the self-check cases\)/.test(src));

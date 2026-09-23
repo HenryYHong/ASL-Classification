@@ -47,13 +47,13 @@ out of it.
 Three things are fetched from the network on first load and then cached by the browser:
 MediaPipe's `tasks-vision@0.10.18` bundle and WASM from jsDelivr (about 9 MB), the hand landmarker
 `.task` file from `storage.googleapis.com`, and the models from this directory — `models.bin.gz`
-plus `models.meta.json`, **1,183,438 + 982 = 1,184,420 B on the wire**. That is 62.4% less than
+plus `models.meta.json`, **1,183,438 + 965 = 1,184,403 B on the wire**. That is 62.4% less than
 the 3,145,891 B the previous release put there, on a letter forest that grew 22.8% over the same
 span. `app.js` calls `loadModels('./models.bin.gz', './models.meta.json')`; see **The binary
 format** below.
 
 `docs/models.json` is still committed and still served, as the readable reference — the same
-three forests in one file anyone can open, 20,361,559 B raw and 3,703,069 B under Pages' own gzip
+three forests in one file anyone can open, 20,361,559 B raw and 3,703,057 B under Pages' own gzip
 (level 5) — but the page does not fetch it. `loadModels` decides by the bytes rather than the file
 name and returns the identical object from either container, so pointing that one call back at
 `./models.json` is all it takes to load the JSON instead. `docs/models.bin.gz` is committed
@@ -156,8 +156,8 @@ Measured on the shipped export:
 
 | | raw | on the wire | nodes |
 | --- | --- | --- | --- |
-| `models.json` | 20,361,559 B | 3,703,069 B (`gzip -5`, which is what Pages does) | 278,750 |
-| `models.bin` + `models.meta.json` | 2,555,774 + 2,726 B | 1,183,438 + 982 B = **1,184,420 B** | the same 278,750 |
+| `models.json` | 20,361,559 B | 3,703,057 B (what the deployed site returns) | 278,750 |
+| `models.bin` + `models.meta.json` | 2,555,774 + 2,726 B | 1,183,438 + 965 B = **1,184,403 B** | the same 278,750 |
 | — the letter forest alone | 18,931,302 B of JSON (77.25 B/node) | 2,264,570 B of binary (9.24 B/node), 1,041,301 B gzipped (4.25 B/node) | 245,064 |
 | `golden.json` | 162,184 B, 41 cases | | |
 
@@ -167,7 +167,7 @@ internal. `NODE_BUDGET` in `export_models.py` is 260,000 and was 200,000; the ex
 against the old value at 245,064, which is the point of having it. The remaining 6% of headroom
 is room for one retrain's drift, not for another dataset. Against the previous release, measured
 on that release's own committed file rather than quoted from it: 16,801,546 raw and 3,145,891 on
-the wire, so +21.2% raw and **+17.7% on the wire**, and 1,000,455 to 1,184,420 (+18.4%) by the
+the wire, so +21.2% raw and **+17.7% on the wire**, and 1,000,455 to 1,184,403 (+18.4%) by the
 binary route.
 
 `export_models.py` flattens each tree to the four arrays a walk needs (`f`, `t`, `l`, `r`) plus
@@ -278,8 +278,16 @@ had to change: the load line says "about 1.18 MB, already compressed", the watch
 labeled with the two files it fetches, and `test_app.mjs` pins all three together. Booted in
 headless Chrome against `devserver.py` — which serves everything raw — the Performance API reports
 1,183,738 B transferred for `models.bin.gz` and 3,026 B for `models.meta.json`, headers included,
-and no request for `models.json` at all. On Pages, which gzips the 2,726 B meta file to 982 B,
-that is the 1,184,420 B above.
+and no request for `models.json` at all.
+
+The deployed figures are measured on the deployed site, not estimated from a local `gzip`. Asking
+henryyhong.com for the two files the way a browser does (`Accept-Encoding: gzip, deflate, br`):
+`models.bin.gz` comes back with no `Content-Encoding` at 1,183,438 B, because Pages leaves
+`application/gzip` alone, which is exactly why the `.gz` is committed rather than generated at
+deploy time; `models.meta.json` comes back `Content-Encoding: gzip` at 965 B. **1,184,403 B**,
+and all three of `models.bin.gz`, `models.meta.json` and `parity.json` hash identically to the
+committed files. A local `gzip -5 -c` predicts 982 B for the meta file, so the estimate was 17 B
+pessimistic; the live number is the one quoted here.
 
 **`models.json` stays committed anyway, as the readable reference.** It is the one file in this
 directory a person can open and read the forests out of, and `loadModels` still loads it —
@@ -473,7 +481,7 @@ for that reason.
 The page loads the sidecar pair, so start there. **`models.bin.gz` carries the trees and nothing
 else**, and nothing in it is rounded: `f` is an `i8` feature index, `t` is a full `f64` threshold,
 `r` is a `u16` child offset, and each leaf holds its exact integer sample counts as `u16` rather
-than a probability. **`models.meta.json` (2,726 B raw, 982 B under Pages' gzip) carries everything
+than a probability. **`models.meta.json` (2,726 B raw, 965 B under Pages' gzip) carries everything
 that is not a tree**: per forest the class list, feature tag, dimension, tree count, node count
 and the `[byteOffset, elementCount]` pair for each section; the build id that binds the two files;
 and the thresholds. Those thresholds are the 46 fields `thresholds.py` defines, written as

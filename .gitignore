@@ -15,8 +15,9 @@ temporal/external_clips.npz
 # .json on the fly, so committing the .gz beside it would buy nothing. models.json itself stays
 # committed as the readable reference even though the page now fetches the binary pair instead.
 # Kept local for the gzip test.
-# (What Pages does to it is gzip level 5: `gzip -5 docs/models.json` is 3,703,069 B here,
-# against 3,461,703 B at level 9, which is what export_models.py writes.)
+# (Pages compresses it on the fly at about level 5: `gzip -5 -c docs/models.json` is 3,703,069 B
+# here and the deployed site returns 3,703,057 B, against 3,461,703 B at level 9, which is what
+# export_models.py writes.)
 docs/models.json.gz
 
 # The raw binary sidecar, also from docs/export_models.py. Unlike the JSON, its .gz IS

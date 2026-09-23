@@ -10,7 +10,7 @@
 // The same forests arrive in either of two formats and leave as the same typed arrays:
 // models.json, which is readable and 20,361,559 B, and models.bin + models.meta.json, which is
 // 2,555,774 + 2,726 B and is what the page fetches -- as models.bin.gz + models.meta.json,
-// 1,184,420 B on the wire against models.json's 3,703,069 B. prepareModel reads the first,
+// 1,184,403 B on the wire against models.json's 3,703,057 B. prepareModel reads the first,
 // prepareModelBin the second, loadModels picks by looking at the bytes, and everything below
 // this point is shared.
 //
@@ -345,7 +345,7 @@ export function prepareModelsBin(buf, meta) {
  * one prepared model, one walk -- prepareModel and prepareModelBin return the same structure
  * and predictProba below cannot tell them apart.
  *
- * Both fetches start together when `metaUrl` is given. The meta file is 2,726 B (982 B
+ * Both fetches start together when `metaUrl` is given. The meta file is 2,726 B (965 B
  * compressed), so on a slow connection the second request costs a round trip and nothing else,
  * and serializing it behind a 1.18 MB body would be the one avoidable stall in the load.
  *

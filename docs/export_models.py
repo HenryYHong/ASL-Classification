@@ -22,10 +22,10 @@ Three outputs:
 
                  Measured on this export, the one that carries the 245,064-node letter forest.
                  20,361,559 B of JSON become 2,555,774 B of binary, 8.0x. On the wire,
-                 3,703,069 B become 1,184,420 B, 3.1x -- GitHub Pages compresses the JSON on
+                 3,703,057 B become 1,184,403 B, 3.1x -- GitHub Pages compresses the JSON on
                  the fly at gzip level 5 (that figure is `gzip -5 models.json` here) and does
                  not compress octet-stream at all, so the binary ships as the committed
-                 1,183,438 B models.bin.gz plus 982 B of meta. Decoding the three forests into
+                 1,183,438 B models.bin.gz plus 965 B of meta. Decoding the three forests into
                  the typed arrays the page walks: 124-150 ms through models.json against
                  17-28 ms through models.bin, six interleaved runs of each on Node 20
                  (101-114 ms of that is JSON.parse alone; the binary has no parse step, only a
@@ -36,8 +36,8 @@ Three outputs:
 
                  The forest grew 23% in nodes between the last release and this one, and those
                  two figures are how the growth is paid for: the JSON route, which the page
-                 used until this release, went 3,145,891 -> 3,703,069 B on the wire, and the
-                 binary route the page now takes 1,000,455 -> 1,184,420 B. The larger forest
+                 used until this release, went 3,145,891 -> 3,703,057 B on the wire, and the
+                 binary route the page now takes 1,000,455 -> 1,184,403 B. The larger forest
                  through models.bin.gz is still a third of the smaller one through models.json,
                  which is why the download fell 62.4% in a release that grew the forest 22.8%.
 
@@ -107,8 +107,8 @@ from thresholds import DEFAULT, digits_thresholds     # noqa: E402
 #:   models.json block   18,931,302 B raw, 77.25 B/node;  3,111,150 B gzipped, 12.70 B/node
 #:   models.bin sections  2,264,550 B raw,  9.24 B/node;  1,041,301 B gzipped,  4.25 B/node
 #:
-#: and for the whole file, which is what a phone actually waits for: 3,145,891 -> 3,703,069 B at
-#: `gzip -5` (models.json, the route the page left behind this release: +17.7%), 1,000,455 -> 1,184,420 B
+#: and for the whole file, which is what a phone actually waits for: 3,145,891 -> 3,703,057 B at
+#: `gzip -5` (models.json, the route the page left behind this release: +17.7%), 1,000,455 -> 1,184,403 B
 #: through models.bin.gz plus its meta (+18.4%). The per-node cost barely moved; the node count
 #: did, and the binary route is what keeps the bill under a megabyte and a fifth.
 #:

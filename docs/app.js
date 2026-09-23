@@ -460,8 +460,8 @@ function boot() {
         + 'already compressed, cached after the first time)';
       // forest.js owns the fetch, including the gzip sniffing GitHub Pages needs. A second
       // loader here would be a second implementation of the thing this project keeps being
-      // burned by having two of. The binary pair is 1,184,420 B on the wire against models.json's
-      // 3,703,069 B, and loadModels returns the identical object either way -- docs/models.json
+      // burned by having two of. The binary pair is 1,184,403 B on the wire against models.json's
+      // 3,703,057 B, and loadModels returns the identical object either way -- docs/models.json
       // stays committed as the readable reference and still loads if this line is pointed at it.
       models = await watchdog(loadModels('./models.bin.gz', './models.meta.json'),
         'fetching models.bin.gz and models.meta.json');
