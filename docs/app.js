@@ -47,7 +47,7 @@ const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarke
 const DISPLAY_W = 960;
 const FPS_WINDOW = 30;
 
-//: The feature transform each forest was trained on, by the tag models.json carries for it.
+//: The feature transform each forest was trained on, by the tag the model export carries for it.
 //: features.js can build every tag in STATIC_FEATURES and the Segmenter picks the function by
 //: the tag, so a registered tag can never produce train/serve skew; an UNREGISTERED tag is the
 //: one failure that produces no symptom at all -- the vector is the right length, the forest is
@@ -151,7 +151,7 @@ export function staticTagStatus(model, expected) {
  * `models` is {static, digits}: each case names its forest in `model` ("static" when absent),
  * and the feature function for a case is the one that forest's tag selects through
  * STATIC_FEATURES -- both shipped forests on static/v4 (112-D). A case whose forest
- * models.json does not carry, or whose stored vector width or class count disagrees with that
+ * the export does not carry, or whose stored vector width or class count disagrees with that
  * forest, THROWS: those are exactly the export-side mismatches the self-check exists to catch,
  * and the caller reports them as a problem, not as "not run".
  *
@@ -191,7 +191,7 @@ export function checkGolden(models, golden) {
     const which = c.model || 'static';
     const model = models[which];
     if (!model) {
-      throw new Error(`golden case ${n} needs the ${which} forest, which models.json does not carry`);
+      throw new Error(`golden case ${n} needs the ${which} forest, which the export does not carry`);
     }
     const [featureFn, dim] = staticFeatureFor(model.feature == null ? null : model.feature);
     if (c.static_feature.length !== dim) {
@@ -265,7 +265,7 @@ function boot() {
     fatal: el('fatal'), fatalmsg: el('fatalmsg'),
   };
   const ctx = ui.canvas.getContext('2d');
-  // Nothing can be started until models.json and MediaPipe are here: a click before that ran
+  // Nothing can be started until the forests and MediaPipe are here: a click before that ran
   // the frame loop into a landmarker that did not exist yet and reported a false "MediaPipe
   // stopped processing frames". index.html ships the button disabled for the same reason;
   // this is the guard against a markup edit removing it. The Numbers toggle gets the same
@@ -384,7 +384,7 @@ function boot() {
   /** The Segmenter for the current mode, built fresh. Rebuilt rather than re-pointed on a mode
    *  change and on Stop, so a parked D cannot be delivered as a digit, a lastEmitted 'O' cannot
    *  suppress a '0', and a restart with the hand already up starts from NO_HAND rather than
-   *  from a consumed hold. Classes are left to default: forest.js keeps models.json's class
+   *  from a consumed hold. Classes are left to default: forest.js keeps the export's class
    *  list on the prepared model and segmenter.js reads it from there, so there is one list,
    *  not two. The feature function likewise comes from the model's own tag. */
   function buildSegmenter() {
@@ -434,14 +434,14 @@ function boot() {
    *  is dropped (its letters and digits would not spell anything together), and the
    *  segmenter is rebuilt for the reasons buildSegmenter gives. */
   function setMode(next) {
-    // `seg` is non-null exactly when buildSegmenter has succeeded once, i.e. models.json
+    // `seg` is non-null exactly when buildSegmenter has succeeded once, i.e. the model export
     // arrived and the Segmenter accepted its thresholds; the button is disabled until then
     // (and again on a blocking problem), and this is the guard against a click that gets
     // through anyway.
     if (next === mode || !seg) return;
     if (next === 'digits' && !models.digits) {
-      problem('This models.json carries no numbers forest, so numbers mode is not available. '
-        + 'Re-export models.json with temporal/model_digits.p present to enable it.',
+      problem('This model export carries no numbers forest, so numbers mode is not available. '
+        + 'Re-export it with temporal/model_digits.p present to enable it.',
       false, 'mode');
       return;
     }
@@ -456,12 +456,15 @@ function boot() {
 
   async function load() {
     try {
-      ui.loadstate.textContent = 'fetching models.json (about 17 MB, about 3 MB compressed, '
-        + 'cached after the first time)';
+      ui.loadstate.textContent = 'fetching models.bin.gz and models.meta.json (about 1.18 MB, '
+        + 'already compressed, cached after the first time)';
       // forest.js owns the fetch, including the gzip sniffing GitHub Pages needs. A second
       // loader here would be a second implementation of the thing this project keeps being
-      // burned by having two of.
-      models = await watchdog(loadModels('./models.json'), 'fetching models.json');
+      // burned by having two of. The binary pair is 1,184,420 B on the wire against models.json's
+      // 3,703,069 B, and loadModels returns the identical object either way -- docs/models.json
+      // stays committed as the readable reference and still loads if this line is pointed at it.
+      models = await watchdog(loadModels('./models.bin.gz', './models.meta.json'),
+        'fetching models.bin.gz and models.meta.json');
     } catch (err) {
       problem(`The model file failed to load. ${err.message} `
         + `If you opened index.html from the filesystem, serve the folder over http instead: `
@@ -481,18 +484,18 @@ function boot() {
     for (const [which, m, want] of roles) {
       const s = staticTagStatus(m, want);
       if (!s.known) {
-        bad.push(`The ${which} model in models.json was trained on feature "${s.tag}", which `
+        bad.push(`The ${which} model in this export was trained on feature "${s.tag}", which `
           + `this page cannot build (it knows ${Object.keys(STATIC_FEATURES).join(', ')}).`);
       } else if (!s.asExpected) {
         odd.push(`${which} model on ${s.tag}, expected ${want}`);
       }
     }
     if (models.motion.feature != null && models.motion.feature !== MOTION_FEATURE_TAG) {
-      bad.push(`The motion model in models.json was trained on feature "${models.motion.feature}", `
+      bad.push(`The motion model in this export was trained on feature "${models.motion.feature}", `
         + `but this page builds "${MOTION_FEATURE_TAG}".`);
     }
     if (bad.length) {
-      problem(`${bad.join(' ')} Re-export models.json from the current temporal/ code; running `
+      problem(`${bad.join(' ')} Re-export the models from the current temporal/ code; running `
         + 'it anyway would produce confident nonsense rather than an error.', true);
       return;
     }
@@ -506,7 +509,7 @@ function boot() {
     try {
       buildSegmenter();
     } catch (err) {
-      problem(`The segmenter rejected the thresholds in models.json: ${err.message}`, true);
+      problem(`The segmenter rejected the thresholds in this export: ${err.message}`, true);
       return;
     }
     paintMode();
@@ -557,14 +560,14 @@ function boot() {
             + `The page still runs, but do not trust the letters.`, false, 'selfcheck');
         }
       } catch (err) {
-        // A throw here is structural: a case for a forest models.json does not carry, or a
+        // A throw here is structural: a case for a forest the export does not carry, or a
         // class count or feature width that disagrees with it. That is the export-side
         // mismatch the self-check exists to catch, so it is a problem in its own right --
         // it used to be downgraded to "not run" with Start enabled.
         ui.selfcheck.textContent = 'FAILED: could not run';
         ui.selfcheck.className = 'err';
-        problem(`The self-check could not be run against this models.json: ${err.message}. `
-          + 'golden.json and models.json were not exported together. The page still runs, '
+        problem(`The self-check could not be run against this model export: ${err.message}. `
+          + 'golden.json and the forests were not exported together. The page still runs, '
           + 'but do not trust the letters.', false, 'selfcheck');
       }
     }

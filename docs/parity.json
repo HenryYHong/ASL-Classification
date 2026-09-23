@@ -1,0 +1,60 @@
+{
+ "probe_total": 1215,
+ "sigmas": [
+  0.0001,
+  0.001,
+  0.01,
+  0.05
+ ],
+ "seed": 0,
+ "build": "aa052b8b95cb23a9de227ef07b3c3349",
+ "forests": {
+  "static": {
+   "probes": {
+    "bases": 26,
+    "midpoints": 325,
+    "noisy": 864,
+    "total": 1215
+   },
+   "trees": 60,
+   "leaf_visits": 72900,
+   "leaf_disagreements": 0,
+   "json_leaf_cells": 2941488,
+   "bin_leaf_nonzeros": 254521,
+   "json": {
+    "max_abs_dp": 6.252464844092032e-06,
+    "argmax_changes": 0
+   },
+   "bin": {
+    "max_abs_dp": 4.052097268836263e-09,
+    "argmax_changes": 0
+   }
+  },
+  "digits": {
+   "probes": {
+    "bases": 15,
+    "midpoints": 105,
+    "noisy": 1095,
+    "total": 1215
+   },
+   "trees": 100,
+   "leaf_visits": 121500,
+   "leaf_disagreements": 0,
+   "json_leaf_cells": 116980,
+   "bin_leaf_nonzeros": 21935,
+   "json": {
+    "max_abs_dp": 5.0686260193444355e-06,
+    "argmax_changes": 0
+   },
+   "bin": {
+    "max_abs_dp": 4.745906778680364e-09,
+    "argmax_changes": 0
+   }
+  },
+  "motion": {
+   "probes": null,
+   "trees": 300,
+   "bin_leaf_nonzeros": 6400
+  }
+ }
+}

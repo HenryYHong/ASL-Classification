@@ -84,9 +84,9 @@ const REQUIRED_THRESHOLDS = [
   'REQUIRE_PARKED', 'V_SMOOTH_WINDOW', 'SHAPE_STABLE', 'SHAPE_WINDOW', 'RIGID_VETO',
   'GATE_ARM_FRAC', 'GATE_ARM_WINDOW', 'T_MIN', 'T_MAX', 'L_MIN', 'L_MAX', 'STRAIGHT_VETO',
   'P_EMIT', 'MARGIN', 'VOTE_WINDOW', 'VOTE_MIN', 'VOTE_AGREE', 'VOTE_PROB', 'VOTE_MARGIN',
-  'VOTE_MARGIN_CLEAR', 'VOTE_PROB_FLOOR', 'HOLD_SETTLE', 'D_WAIT', 'COOLDOWN_MOTION',
-  'COOLDOWN_STATIC', 'GAP_INTERP', 'GAP_RESET', 'HAND_SWITCH_S', 'BUFFER', 'FALL_CONFIRM',
-  'FALL_CONFIRM_SLOW',
+  'VOTE_MARGIN_CLEAR', 'VOTE_PROB_FLOOR', 'VOTE_PROB_LETTER', 'HOLD_SETTLE', 'D_WAIT',
+  'COOLDOWN_MOTION', 'COOLDOWN_STATIC', 'GAP_INTERP', 'GAP_RESET', 'HAND_SWITCH_S', 'BUFFER',
+  'FALL_CONFIRM', 'FALL_CONFIRM_SLOW',
 ];
 
 function checkThresholds(th) {
@@ -707,11 +707,17 @@ export class Segmenter {
     const th = this.th;
     if (agree < th.VOTE_AGREE) return 'agree';
     if (margin < th.VOTE_MARGIN) return 'margin';
-    const confident = meanp >= th.VOTE_PROB;
+    // Both routes read the letter's own floor (thresholds.VOTE_PROB_LETTER): a relaxed hand is
+    // read as a loose G and as nothing else above 0.51, so G stands at 0.75 while the rest of the
+    // alphabet sits at 0.55 instead of paying G's bill.
+    const perLetter = th.VOTE_PROB_LETTER || {};
+    const own = Object.prototype.hasOwnProperty.call(perLetter, letter) ? perLetter[letter] : null;
+    const confident = meanp >= (own === null ? th.VOTE_PROB : own);
     // D is classified correctly on 100 of 100 live frames yet peaks at 0.41, because the forest
     // splits its mass across D/X/C. No absolute floor can ever emit it; its margin (0.14) over
     // genuine junk (0.05-0.07) is what separates them.
-    const decisive = margin >= th.VOTE_MARGIN_CLEAR && meanp >= th.VOTE_PROB_FLOOR;
+    const floor = own === null ? th.VOTE_PROB_FLOOR : own;
+    const decisive = margin >= th.VOTE_MARGIN_CLEAR && meanp >= floor;
     if (!(confident || decisive)) return 'undecided';
     if (t < this._cooldownUntil) return 'cooldown';
     if (this._postMotion !== null) return 'post_motion';

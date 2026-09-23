@@ -10,7 +10,7 @@ Units are SECONDS and PALM-WIDTHS throughout, never frames or pixels. Frame rate
 constant on a webcam, and pixel distances change with camera distance; both would make these
 constants camera-specific. In palm-seconds they transfer.
 """
-from dataclasses import dataclass, asdict, fields, replace
+from dataclasses import dataclass, asdict, field, fields, replace
 import json
 
 
@@ -148,23 +148,26 @@ class Thresholds:
                                     # vote NEVER completes. It happened to fit at 30 fps, so the
                                     # bug was invisible live and cost 8 of 24 archive letters.
     VOTE_AGREE: float = 0.70        # fraction of votes that must agree
-    VOTE_PROB: float = 0.75         # mean winner probability, the "confident" route. MEASURED
+    VOTE_PROB: float = 0.55         # mean winner probability, the "confident" route, for every
+                                    # letter that VOTE_PROB_LETTER does not name. MEASURED
                                     # with VOTE_PROB_FLOOR below, and equal to it on purpose:
                                     # this route admits any vote above it whatever the floor
                                     # says, so a floor above VOTE_PROB would be a no-op. With
                                     # the two equal, the decisive route (margin >= 0.20 and
-                                    # probability >= 0.75) is a subset of this one and the
-                                    # rule collapses to: agree >= VOTE_AGREE, margin >=
-                                    # VOTE_MARGIN, mean winner probability >= 0.75. Both
-                                    # routes are kept so the machinery still exists if the
-                                    # two values are ever separated again. History: 0.35 for
-                                    # the one-session forest (856 live holds, mean winner
+                                    # probability >= the same value) is a subset of this one
+                                    # and the rule collapses to: agree >= VOTE_AGREE, margin
+                                    # >= VOTE_MARGIN, mean winner probability >= the letter's
+                                    # floor. Both routes are kept so the machinery still
+                                    # exists if the two values are ever separated again, and
+                                    # both read VOTE_PROB_LETTER. History: 0.35 for the
+                                    # one-session forest (856 live holds, mean winner
                                     # probability 0.44 live against 0.82 in-session, a floor
                                     # on the in-session scale rejected 98% of live holds);
                                     # 0.70 once a second session made the forest confident
                                     # (correct live emissions 0.72-0.99, transitional
-                                    # misfires 0.36-0.65); 0.75 for the multi-signer forest,
-                                    # see VOTE_PROB_FLOOR.
+                                    # misfires 0.36-0.65); 0.75 flat for the first
+                                    # multi-signer forest; 0.55 with G at 0.75 for this one,
+                                    # see VOTE_PROB_LETTER.
     VOTE_MARGIN: float = 0.10       # the winner must always beat the runner-up by at least this
                                     # (not swept)
     # A letter may emit by EITHER route, because absolute probability and margin measure
@@ -195,7 +198,8 @@ class Thresholds:
     # committed as temporal/idle_holds.npz so the gate survives the log. The motion
     # recordings' REST windows are NOT used as negatives: the signer re-forms the next item's
     # launch I/D within about 1 s of every rest. Rule: any clean idle hold that emits raises
-    # the floor by 0.05 and the gate is re-run.
+    # THE EMITTING LETTER's floor by 0.05 and the gate is re-run -- and the gate is run at
+    # three jitter seeds, not one (idle_gate.py --seeds 3), for the reason in (b) below.
     #
     # ROUND ONE, the one-signer forest (static/v4, jitter, strong filter, RF100): the design
     # sweep chose 0.20 / 0.50 (0 of 43 idle holds on the candidate draw, first vote 0.817 /
@@ -204,26 +208,63 @@ class Thresholds:
     # exactly the right letter 65/71, first emission wrong 3/71, silent 2/71, 4 wrong letters,
     # cross-day fold 19/24, median first-emission latency 0.46 s.
     #
-    # ROUND TWO, the multi-signer forest that ships (other people's hands on the training
-    # side, strangers.py; no filter; RF80). It is far more confident on the author's held
+    # ROUND TWO, the first multi-signer forest (other people's hands on the training side,
+    # strangers.py; no filter; RF80/leaf 5). It is far more confident on the author's held
     # signs -- and on a relaxed hand, which it reads as a loose G: at 0.55 it emits on 5 of
     # the 43 idle holds (42 votes, every one a G; max mean probability 0.695), at 0.65 on 2,
     # at 0.70 on none with 0.005 to spare, at 0.75 on none with 0.055 to spare. Filtering
     # the strangers' G frames by the G rule does not remove it (2 of 43 at 0.55), and a REST
     # class trained on the motion recordings' rest windows catches only 5% of the idle frames
-    # (a hand relaxed mid-recording is not a hand idling at a laptop), so the floor moved.
-    # What 0.75 costs, from replay_static.py with the same forest's held-out fold models and
-    # VOTE_PROB raised to match: exactly the right letter 64/71 (65 at 0.55 and 0.70, 63 at
-    # 0.80), first emission wrong 1/71, ONE wrong letter emitted in 71 holds (the previous
-    # forest: 4), silent 6/71 (E and N once each on the cross-day fold, S2-K, which is silent
-    # under every forest, and the three S3 D holds, which are silent at 0.55 too), cross-day
-    # fold exact 21/24 (previous forest 19/24), median latency 0.46 s, 0 track starts.
-    # Silence on a hold the forest is unsure of is the design; a wrong letter is the defect.
-    # The floor sits within 0.06 of a relaxed hand, so a different pose or camera could cross
-    # it: re-run idle_gate.py after the next live session. On strangers (crossval_strangers.py,
-    # ASLNow held out, a forest that never saw that set) the rule emits on 0.46 of single
-    # frames and is right on 0.962 of those (0.65 / 0.914 at the old 0.55 floor); a held sign
-    # offers many windows, a record offers one, so that is a floor on what a visitor sees.
+    # (a hand relaxed mid-recording is not a hand idling at a laptop), so the floor moved to
+    # 0.75 flat.
+    #
+    # TWO CORRECTIONS TO THAT RECORD, both re-measured before this release.
+    #
+    # (a) WHAT 0.75 COST. The note here used to read "silent 6/71" beside the 0.75 floor, and
+    # it was read ever after as the floor's price. It was not. Silent AT a floor is not
+    # silenced BY it. Re-swept on that same recipe with replay_static.py (seed 0, held-out
+    # fold models, exactly the right letter / silent set):
+    #
+    #     0.40  67/71  {S2-K}                      0.65  65/71  {S1-N, S2-K, S3-D x3}
+    #     0.50  67/71  {S2-K}                      0.70  65/71  {S1-N, S2-K, S3-D x3}
+    #     0.55  65/71  {S2-K, S3-D x3}             0.72  65/71  {S1-N, S2-K, S3-D x3}
+    #     0.59  65/71  {S2-K, S3-D x3}             0.75  64/71  {S1-E, S1-N, S2-K, S3-D x3}
+    #
+    # The 0.75 floor cost exactly ONE held sign of the 71 -- S1-E, which emits at 0.72 and at
+    # 0.70. Of the other five, S1-N was already gone by 0.65, the three S3-D holds by 0.55,
+    # and S2-K by 0.40 (it emits only at 0.35 and 0.30, where 11 and 17 of the 43 idle holds
+    # emit with it, so no shippable floor was ever going to save it). Quote the DIFFERENCE
+    # between two floors, never the count at one of them.
+    #
+    # (b) THE HEADROOM WAS ONE PICKLE'S. "0 of 43 with 0.055 to spare" was measured on the
+    # committed model_static.p and on nothing else. idle_gate.py --seeds 3 re-runs the same
+    # recipe at three jitter seeds: it passes at seed 0 with a most confident idle vote of
+    # 0.6950 -- the number above -- and EMITS at seed 2 (1 hold, 1 vote, a G, 0.7536 over the
+    # 0.75 floor). The author-cap-only variant of it emits at seeds 1 and 2 (max 0.7825). A
+    # floor whose evidence is one draw is not evidence about the recipe.
+    #
+    # ROUND THREE, the forest that ships now (author capped at 160/letter pooled + ASLNow +
+    # Ankara + ASL-HG's 10 signers capped at 25 per signer-letter; RF 60 trees / leaf 5,
+    # chosen by the rule in train_static.py). Its floor is re-derived from ITS OWN idle
+    # behavior, not carried over. Per-letter, the most confident idle vote that already clears
+    # VOTE_AGREE and VOTE_MARGIN, over the 43 clean idle holds, at seeds 0 / 1 / 2:
+    #
+    #     G  0.7087  0.7019  0.7101          M  0.3346  0.4299  0.4224
+    #     A  0.4326  0.4888  0.5130          H  0.3585  0.2394  0.3253
+    #     O  0.4660  0.4575  0.5105          Q    --    0.3590    --
+    #     C    --    0.2991  0.2803          S    --      --    0.2884
+    #
+    # Sixteen of the 24 letters never win an idle vote at any of the three seeds. ONE letter
+    # is the problem, as it always was: a relaxed hand hanging at a laptop is a loose G. Every
+    # other letter tops out at 0.5130. A single number for all 24 therefore has to be set by G
+    # and then charged to the alphabet, and on this forest that bill is large: replaying the
+    # author's 71 held signs through the real Segmenter with held-out fold models
+    # (replay_static.py, three seeds), a flat floor gives exactly the right letter 69/71 at
+    # 0.55 and 61/71 at 0.72 and at 0.75, with the silent set growing from {S2-K} to {S1-G,
+    # S1-N, S1-R, S2-D, S2-K, S2-R, S3-D x3}. Eight holds, for one letter's habit.
+    #
+    # So the floor is per letter (VOTE_PROB_LETTER). See that field for the profile, what it
+    # costs and what it buys.
     #
     # Alternatives measured and rejected. MARGIN_CLEAR 0.30 buys nothing on an idle hand at any
     # floor and costs correct first votes; a unanimity route (agree == 1.0 over >= 8 votes)
@@ -231,11 +272,42 @@ class Thresholds:
     # rest-phase emissions -- a unanimous low-probability vote is exactly a relaxed hand read
     # consistently as the wrong letter.
     VOTE_MARGIN_CLEAR: float = 0.20 # MEASURED, was 0.12; inert while VOTE_PROB_FLOOR == VOTE_PROB
-    VOTE_PROB_FLOOR: float = 0.75   # MEASURED, was 0.30, then 0.50 / 0.55 for the one-signer
-                                    # forest, 0.75 for the multi-signer one (see above). The
-                                    # knob that separates a held letter from an idle hand;
-                                    # the margin does not. The word layer's constants below
-                                    # were swept at 0.50 and re-measured at this floor.
+    VOTE_PROB_FLOOR: float = 0.55   # MEASURED, was 0.30, then 0.50 / 0.55 for the one-signer
+                                    # forest, 0.75 flat for the first multi-signer one, and
+                                    # 0.55 with a per-letter exception now (see above and
+                                    # VOTE_PROB_LETTER). The knob that separates a held letter
+                                    # from an idle hand; the margin does not. The word layer's
+                                    # constants below were swept at 0.50 and re-measured at
+                                    # the 0.75 flat floor, so they are due a re-sweep here.
+    #: Letters whose floor is RAISED above VOTE_PROB / VOTE_PROB_FLOOR. Both vote routes read
+    #: it (segmenter.Segmenter._vote_verdict and docs/segmenter.js's _voteVerdict); a letter
+    #: not named here uses the flat value.
+    #:
+    #: MEASURED on the shipped forest's own idle behavior, three seeds, the table above. G is
+    #: the only letter a relaxed hand is ever read as above 0.5130, and it reaches 0.7101 at
+    #: its worst seed. 0.75 leaves G 0.0399 of headroom and 0.55 leaves every other letter
+    #: 0.0370 (A, at 0.5130) -- the same margin on both sides of the profile, which is what
+    #: makes this two numbers and not twenty-four. An entry may only RAISE a letter's floor;
+    #: __post_init__ refuses one below the flat value, because a per-letter RELAXATION would
+    #: be invisible in the flat constants and would be exactly how the idle hand gets back in.
+    #:
+    #: What it buys, replay_static.py over the author's 71 held signs with held-out fold
+    #: models, seeds 0/1/2, against the flat 0.75 it replaces: exactly the right letter 68 of
+    #: 71 at every seed against 61, silent 2 against 9, one wrong letter emitted either way,
+    #: cross-day fold exact 22 of 24 against 20, median first-emission latency 0.46 s either
+    #: way. The two that stay silent are S2-K, which is silent under every forest and every
+    #: floor this project ships, and S1-G -- G's own hold, paying G's own bill, which is the
+    #: honest shape of this trade. What it costs on the idle hand: nothing measurable -- 0 of
+    #: the 43 clean idle holds emit at any of the three seeds, the same as flat 0.75, because
+    #: G still stands at 0.75 and no other letter gets near 0.55. A flat 0.55 would give 69
+    #: of 71, and it emits on 4, 4 and 5 of the 43 idle holds (53-55 votes, every one a G).
+    #:
+    #: Digits mode clears it (DIGITS_OVERRIDES). It was inert there either way -- the keys are
+    #: letters and the digit classes are '0'..'9', so nothing could ever look G up -- but it
+    #: was being carried into models.json and models.meta.json as a per-class floor on a forest
+    #: whose classes are 0-9, which is a thing a reader has to disprove before they can trust
+    #: the block. An empty dict states it instead.
+    VOTE_PROB_LETTER: dict = field(default_factory=lambda: {"G": 0.75})
     HOLD_SETTLE: float = 0.25       # seconds of stillness required to enter HOLD. 0.15 was too
                                     # permissive once a second session raised confidence: a brief
                                     # pause while moving between letters counted as a hold, and
@@ -350,7 +422,10 @@ class Thresholds:
                                     # {0, 1.1, 1.4, 1.7, 2.0, 2.5, 3.0}, plus an extension to
                                     # min ratio 0.5 and prior 4.0 once the optimum sat on the
                                     # grid's edge) on the multi-signer forest's leave-one-
-                                    # session-out posteriors at the shipped 0.75 gate, scoring
+                                    # session-out posteriors at the FLAT 0.75 gate that shipped
+                                    # when the sweep was run -- not this release's 0.55 with G
+                                    # at 0.75, which is one of the two inputs that moved under
+                                    # these constants and has not been re-swept -- scoring
                                     # recovered - C x shown-wrong (C in {2, 3}) over common
                                     # words, proper names and rare words. The tables want a
                                     # stronger prior than before (3.0 in the fresh-hold retry
@@ -398,6 +473,30 @@ class Thresholds:
                              f"({need:.2f}s needed)")
         if not (self.V_STILL < self.V_MOVE_ARMED < self.V_MOVE_UNARMED):
             raise ValueError("speed thresholds must be strictly ordered")
+        # A copy, because DIGITS_OVERRIDES and any other override table hand the SAME dict
+        # object to every instance built from it, and one mutation would then move a constant
+        # for the whole process.
+        self.VOTE_PROB_LETTER = dict(self.VOTE_PROB_LETTER)
+        # A per-letter entry may only RAISE a letter's floor. One below the flat value would
+        # be a relaxation that neither VOTE_PROB nor VOTE_PROB_FLOOR shows, and the flat pair
+        # is what every summary of this system quotes.
+        for letter, floor in dict(self.VOTE_PROB_LETTER).items():
+            if not (isinstance(letter, str) and len(letter) == 1 and letter.isupper()):
+                raise ValueError(f"VOTE_PROB_LETTER key {letter!r} is not a single letter")
+            if not 0.0 <= float(floor) <= 1.0:
+                raise ValueError(f"VOTE_PROB_LETTER[{letter}] = {floor} is not a probability")
+            if float(floor) < min(self.VOTE_PROB, self.VOTE_PROB_FLOOR):
+                raise ValueError(
+                    f"VOTE_PROB_LETTER[{letter}] = {floor} is below the flat floor "
+                    f"{min(self.VOTE_PROB, self.VOTE_PROB_FLOOR)}; entries may only raise")
+
+    def vote_prob_for(self, letter):
+        """The confident route's threshold for one letter."""
+        return self.VOTE_PROB_LETTER.get(letter, self.VOTE_PROB)
+
+    def vote_floor_for(self, letter):
+        """The decisive route's threshold for one letter."""
+        return self.VOTE_PROB_LETTER.get(letter, self.VOTE_PROB_FLOOR)
 
     def to_json(self, path):
         with open(path, "w") as fh:
@@ -421,7 +520,8 @@ NEEDS_GESTURE_DATA = ("RIGID_VETO", "T_MIN", "T_MAX", "P_EMIT", "MARGIN", "V_SMO
 #: guesses: temporal/simulate_words.py spells 2,000 frequency-weighted common words, 600 proper
 #: names and 1,000 rare words from random held-out holds of the leave-one-session-out letter
 #: posteriors (one fresh Segmenter vote per letter, the vote gate above, 5 seeds) and scores
-#: what the layer would show. At the shipped gate (mean winner probability >= 0.75) and
+#: what the layer would show. At the gate that shipped when this was measured (a flat mean
+#: winner probability >= 0.75, not this release's 0.55 with G at 0.75) and these
 #: constants, on the multi-signer forest's out-of-fold posteriors (make_oof.py, seed 0):
 #: common words recovered 0.42 / shown wrong 0.08 when a misread letter is retried from
 #: consecutive windows of the same hold (3 tries), and 0.66 / 0.05 when every retry is a
@@ -468,9 +568,23 @@ DEFAULT = Thresholds()
 #: what makes the proxy weak evidence. One spurious digit per six idle holds is still high:
 #: duplicate suppression bounds it to one per hand-raise, and the page says so. Nothing here
 #: was verified on the author's hand signing a digit; recording those is the first follow-up.
-DIGITS_OVERRIDES = {"VOTE_MARGIN_CLEAR": 0.40, "VOTE_PROB_FLOOR": 0.60, "VOTE_PROB": 0.70}
+#:
+#: VOTE_PROB_LETTER is CLEARED here, and that is the third override rather than a fourth
+#: constant. The letters' profile is {"G": 0.75}, measured on the letter forest's idle
+#: behavior; the digit forest's classes are '0'..'9', so no digit vote could ever look 'G' up
+#: and carrying it was inert. It was not harmless: digits_thresholds() is what
+#: docs/export_models.py writes into models.json and models.meta.json, so a per-class floor for
+#: a letter shipped inside the numbers block, where the next reader had to work out that it
+#: could not fire before they could trust the rest of the block. An empty dict says it outright.
+#: Clearing it changes no digit decision -- the flat pair below is what governed there and
+#: still does.
+DIGITS_OVERRIDES = {"VOTE_MARGIN_CLEAR": 0.40, "VOTE_PROB_FLOOR": 0.60, "VOTE_PROB": 0.70,
+                    "VOTE_PROB_LETTER": {}}
 
 
 def digits_thresholds(base=None):
     """The Thresholds numbers mode runs: `base` (DEFAULT when None) with DIGITS_OVERRIDES applied."""
+    # dict(...) on the per-letter override: every digits Thresholds would otherwise hold the
+    # same dict object as DIGITS_OVERRIDES itself, and one mutation of one instance would move
+    # the constant for the whole process.
     return replace(DEFAULT if base is None else base, **DIGITS_OVERRIDES)

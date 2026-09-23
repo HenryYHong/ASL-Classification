@@ -1,6 +1,6 @@
 """Export the trained forests and a set of golden vectors for the browser port.
 
-Two outputs:
+Three outputs:
 
   models.json    the forests as flat typed arrays, gzip-friendly. A sklearn pickle cannot run
                  in a browser -- it is a Python object graph -- so the trees are flattened to
@@ -10,6 +10,41 @@ Two outputs:
                  thresholds.DEFAULT as a dict, 'digits.thresholds' is DEFAULT with
                  DIGITS_OVERRIDES applied. The thresholds travel in the same file as the trees
                  so the page can never pick up a new forest with stale constants.
+
+  models.bin     the same three forests as a binary sidecar, with models.bin.gz beside it and
+                 the class lists and threshold blocks in a small models.meta.json. forest.js
+                 reads either format and decides from the bytes rather than the file name;
+                 docs/app.js fetches the binary pair as of this release, through the same
+                 loadModels('./models.bin.gz', './models.meta.json'). models.json stays anyway:
+                 it is the readable form, it is what every parity check is run against, and it
+                 is a format forest.js must keep reading -- test_forest.mjs loads it over HTTP
+                 on every run so the unfetched container cannot rot.
+
+                 Measured on this export, the one that carries the 245,064-node letter forest.
+                 20,361,559 B of JSON become 2,555,774 B of binary, 8.0x. On the wire,
+                 3,703,069 B become 1,184,420 B, 3.1x -- GitHub Pages compresses the JSON on
+                 the fly at gzip level 5 (that figure is `gzip -5 models.json` here) and does
+                 not compress octet-stream at all, so the binary ships as the committed
+                 1,183,438 B models.bin.gz plus 982 B of meta. Decoding the three forests into
+                 the typed arrays the page walks: 124-150 ms through models.json against
+                 17-28 ms through models.bin, six interleaved runs of each on Node 20
+                 (101-114 ms of that is JSON.parse alone; the binary has no parse step, only a
+                 6.5-8.7 ms gunzip and a 2.7 KB meta file). Peak memory over the load, one
+                 format per process so neither pays for the other's garbage: 94.3-100.4 MB of
+                 heapUsed + arrayBuffers against 28.3-28.4 MB, 216.6 MB against 75.8 MB of
+                 RSS, both ending at the same 19.0 MB of typed arrays.
+
+                 The forest grew 23% in nodes between the last release and this one, and those
+                 two figures are how the growth is paid for: the JSON route, which the page
+                 used until this release, went 3,145,891 -> 3,703,069 B on the wire, and the
+                 binary route the page now takes 1,000,455 -> 1,184,420 B. The larger forest
+                 through models.bin.gz is still a third of the smaller one through models.json,
+                 which is why the download fell 62.4% in a release that grew the forest 22.8%.
+
+                 The leaf probabilities also get BETTER on the way, because exact integer class
+                 counts are both smaller than the 4-decimal probabilities they replace and
+                 lossless -- see pack_binary_forest. Against sklearn over the 1,215 probes of
+                 parity_probes.py: 6.25e-6 through models.json, 4.05e-9 through models.bin.
 
   golden.json    inputs paired with the exact outputs Python produces for them. The browser port
                  is checked against these rather than against a reading of the code, because the
@@ -32,8 +67,9 @@ Two outputs:
                  image were mirrored (the selfie convention) while the Tasks API labels the
                  frame as given, so the same hand on the same frame gets the opposite word. A
                  port that feeds the raw label straight in mirrors the hand the wrong way and
-                 misses these cases by probability (worst 0.52 at the time of writing, argmax
-                 intact on all 11), which is the point of storing the raw label.
+                 misses these cases by probability, worst |dp| 0.630, and on two of the 11 by
+                 letter as well (this export: A[71] S -> M, U[53] U -> R), which is the point
+                 of storing the raw label.
 
 Run:  ./.venv/bin/python docs/export_models.py     (from the repository root; any cwd works)
 
@@ -43,9 +79,12 @@ these exact forests, so the two files ship together. Deploying a new forest with
 file makes the page's self-check fail on load, which is what it is for.
 """
 import gzip
+import hashlib
+import io
 import json
 import os
 import pickle
+import struct
 import sys
 from dataclasses import asdict
 
@@ -58,11 +97,26 @@ sys.path.insert(0, TEMPORAL)
 import features as F                                  # noqa: E402
 from thresholds import DEFAULT, digits_thresholds     # noqa: E402
 
-#: Node budget for the letter forest. At 76 bytes per node in models.json (full-precision
-#: thresholds, 4-dp leaves) the letter forest is 10.2 MB raw at its shipped 133,680 nodes
-#: (23,705 training rows, min_samples_leaf 5); past 200k the page's first load on a phone
-#: connection is the defect, not the accuracy.
-NODE_BUDGET = 200_000
+#: Node budget for the letter forest: past it the page's first load on a phone connection is the
+#: defect, not the accuracy. It stood at 200,000 while models.json was the only wire format, and
+#: the previous comment asked whoever raised it to raise it against a wire figure and to measure
+#: that leg again. This forest is 245,064 nodes (12,368 training frames, 61,840 rows after
+#: jitter, 60 trees, min_samples_leaf 5), so the old number stops the export; here is that leg,
+#: measured on this export, letter forest only:
+#:
+#:   models.json block   18,931,302 B raw, 77.25 B/node;  3,111,150 B gzipped, 12.70 B/node
+#:   models.bin sections  2,264,550 B raw,  9.24 B/node;  1,041,301 B gzipped,  4.25 B/node
+#:
+#: and for the whole file, which is what a phone actually waits for: 3,145,891 -> 3,703,069 B at
+#: `gzip -5` (models.json, the route the page left behind this release: +17.7%), 1,000,455 -> 1,184,420 B
+#: through models.bin.gz plus its meta (+18.4%). The per-node cost barely moved; the node count
+#: did, and the binary route is what keeps the bill under a megabyte and a fifth.
+#:
+#: 260,000 leaves about 6% of headroom over what ships -- room for one more retrain's drift,
+#: not for another dataset. The next forest that needs more than this should buy it by moving
+#: the page to models.bin.gz (loadModels('./models.bin.gz', './models.meta.json')), which is
+#: worth 2.5 MB on the wire, rather than by raising this line again.
+NODE_BUDGET = 260_000
 
 #: Pixel size of the frames behind the letter golden cases. static_sequences.npz and
 #: static_sequences_tasks.npz are both extracted from the RandomForest/data JPEGs (1920x1080);
@@ -75,12 +129,21 @@ LETTERS = "ABCDEFGHIKLMNOPQRSTUVWXY"
 
 #: The Tasks-API frames that become golden cases, as (letter, frame) into
 #: static_sequences_tasks.npz. A 71, L 89, P 88/93/96 and U 53 are six of the 11 frames (of the
-#: 2,378 the Tasks API found) whose argmax under the previous letter forest FLIPPED when the
-#: swap was left out, all at p 0.33-0.46: the frames a port that drops the swap failed by
-#: letter, not only by probability. The shipped forest happens to keep their argmax without the
-#: swap (0 of 11), so they now catch the omission by probability alone, which is why the check
-#: compares distributions. The first found frame of A, D, I, N and V pairs each solutions case
-#: below with the same burst seen through the page's landmarker.
+#: 2,378 the Tasks API found) whose argmax under an older letter forest FLIPPED when the swap
+#: was left out, all at p 0.33-0.46: the frames a port that drops the swap failed by letter,
+#: not only by probability. Under the forest this export ships, two of the 11 flip again
+#: without the swap (A 71 S -> M, U 53 U -> R) and the other nine miss by probability alone,
+#: worst |dp| 0.630 -- which is why the check compares whole distributions rather than letters.
+#: A 71 is also the one golden case whose argmax is not its own label: this forest reads that
+#: frame as S 0.264 / M 0.258 / A 0.219. The SAME JPEG through the solutions landmarker -- the
+#: extraction that is in training, since A's pooled block is 159 frames and the author cap is
+#: 160 -- reads A 0.811, and the two landmarkers put that hand's points 0.048 apart in
+#: normalized units, which on a closed fist is most of the distance between A, M and S. So the
+#: case stays: a golden case is a port-parity fixture, the page must reproduce these
+#: probabilities whatever they say about the frame, and dropping the cases a forest gets wrong
+#: is how a fixture set stops being a test.
+#: The first found frame of A, D, I, N and V pairs each solutions case below with the same
+#: burst seen through the page's landmarker.
 TASKS_PICKS = [("A", 71), ("L", 89), ("P", 88), ("P", 93), ("P", 96), ("U", 53)]
 TASKS_FIRST = "ADINV"
 
@@ -127,14 +190,14 @@ def flatten(forest):
         for i, f in enumerate(feat):
             if f < 0:
                 # Leaves ARE rounded, to 4 decimals. With min_samples_leaf 5 most leaves hold a
-                # mixed class count (65% of the letter forest's), so this is a real
-                # quantization: at most 5e-5 per leaf, and the forest average cannot exceed the
-                # worst leaf, so the page's probabilities sit within 5e-5 of sklearn's (5.1e-6
-                # measured over 1,215 probes, 0 argmax changes) -- half the golden tolerance of
-                # 1e-4 and three orders under any vote constant. Full-precision leaves would add
-                # 0.9 MB raw for nothing the page can act on. Where a leaf falls, not what
-                # it holds, is what the walk must get exactly right, and that is checked at
-                # 0.00e+0 against sklearn's own leaf indices.
+                # mixed class count (83,223 of the letter forest's 122,562, 67.9%), so this is a
+                # real quantization: at most 5e-5 per leaf, and the forest average cannot exceed
+                # the worst leaf, so the page's probabilities sit within 5e-5 of sklearn's
+                # (6.3e-6 measured over 1,215 probes, 0 argmax changes) -- half the golden
+                # tolerance of 1e-4 and three orders under any vote constant. Full-precision
+                # leaves would add 1.73 MB raw for nothing the page can act on. Where a leaf
+                # falls, not what it holds, is what the walk must get exactly right, and that
+                # is checked at 0.00e+0 against sklearn's own leaf indices.
                 v = t.value[i][0]
                 s = v.sum()
                 leaves[i] = [round(float(x / s), 4) for x in v] if s > 0 else [0.0] * len(v)
@@ -270,6 +333,246 @@ def load_blob(name):
     return blob
 
 
+# ---- models.bin: the binary sidecar ---------------------------------------------------------
+
+#: models.bin's magic and format version. forest.js refuses a body whose first 8 bytes are not
+#: BIN_MAGIC, and refuses a VERSION it does not implement rather than reading the sections at
+#: whatever layout it happens to know. A section read at the wrong dtype or offset is not a
+#: crash: it is a forest that walks to the wrong leaves and answers confidently, which is the
+#: shape of every expensive bug in this project. Bump VERSION whenever a section's dtype, order
+#: or meaning changes -- an old page then says so instead of guessing.
+BIN_MAGIC = b"ASLFRST\x00"
+BIN_VERSION = 1
+
+#: Fixed part of models.bin: magic(8) + VERSION(u32) + endian probe(u32) + header length(u32) +
+#: reserved(u32) + build id(16) = 40 bytes. 40 is a multiple of 8, so the first section can
+#: carry a Float64Array view over the same ArrayBuffer with no copy.
+BIN_HEADER_BYTES = 40
+
+#: Little-endian 0x04030201. A platform-endian Uint32Array view reads it back as 0x04030201 on
+#: a little-endian machine and 0x01020304 on a big-endian one. Every view forest.js makes over
+#: this buffer is platform-endian, so a big-endian reader would byte-swap all 139,145
+#: thresholds in silence; the probe is how it finds out instead.
+BIN_ENDIAN_PROBE = 0x04030201
+
+#: Sections, in the order they are written, with the dtype each is stored at. Each one is the
+#: concatenation over the forest's trees, so the page makes ONE typed-array view per section
+#: instead of one per tree:
+#:
+#:   n     uint32[trees]     nodes per tree
+#:   bits  uint8[]           leaf bitmap, np.packbits order (MSB first), byte-aligned per tree
+#:   f     int8[internal]    split feature, internal nodes only, in node order
+#:   t     float64[internal] split threshold, full precision. Narrowing it to float32 would
+#:                           save 490,008 B on the letter forest and is the one saving here
+#:                           that was measured and then refused. On the PREVIOUS forest it
+#:                           moved a leaf on 1 of that forest's 97,200 tree visits and touched
+#:                           1 of the 1,215 probes; on this one it moves none (0 of 72,900
+#:                           letter visits, 0 of 121,500 digit visits, 0 probes). The refusal
+#:                           stands on the earlier hit rather than on this forest's clean
+#:                           sweep: a probe set that catches a defect once and misses it once
+#:                           has measured the defect, not its absence, and it is the same
+#:                           defect `flatten` records rejecting 5-decimal thresholds over. The
+#:                           page claims to reproduce sklearn, and 490 KB of a 1.18 MB wire
+#:                           load is not what that claim is worth trading for
+#:   r     uint16[internal]  right child as an offset from the node; the left child is i + 1
+#:   vk    uint8[leaves]     how many classes are nonzero in this leaf
+#:   vi    uint8[nnz]        their class indices
+#:   vc    uint16[nnz]       their EXACT integer sample counts; the page divides by their sum
+BIN_SECTION_DTYPES = {"n": "<u4", "bits": "u1", "f": "i1", "t": "<f8", "r": "<u2",
+                      "vk": "u1", "vi": "u1", "vc": "<u2"}
+
+
+def pack_binary_forest(model, name):
+    """One forest as the eight flat sections models.bin stores: {section name: numpy array}.
+
+    Every narrowing here is checked on this forest rather than assumed, because each one fails
+    silently when it is wrong: an out-of-range feature index, right-child offset or class count
+    wraps into a legal-looking value and the walk lands somewhere else with no error at all.
+    The export stops instead, and says which section to widen.
+
+    Three things about the layout are worth knowing.
+
+    Only internal nodes carry f/t/r and only leaves carry a class vector, so neither block pays
+    for the other half of the tree. A leaf bitmap, one bit per node, is what tells the two
+    apart on the way back in.
+
+    The left child is not stored. sklearn's DepthFirstTreeBuilder emits a node's left subtree
+    immediately after the node, so children_left[i] == i + 1 on every internal node -- 139,145
+    of them across the three forests. That is an artifact of the builder and not a documented
+    guarantee: max_leaf_nodes switches sklearn to BestFirstTreeBuilder, which grows the most
+    promising leaf next and interleaves the subtrees, and the identity dies quietly. So it is
+    asserted per tree. Refusing to export costs one run; a wrong left child sends about half of
+    every walk into the wrong subtree and the forest still answers.
+
+    Leaves store exact integer class counts rather than probabilities. sklearn keeps tree_.value
+    normalized, and `value * weighted_n_node_samples` puts the counts back; the page divides by
+    their sum and gets the same rational number sklearn's own predict_proba averages, so the
+    counts are both smaller than the 4-decimal probabilities models.json ships AND lossless,
+    which is not a trade one usually gets. Most of that block was zeros before it was made
+    sparse: the letter forest holds 2.08 nonzero classes per leaf out of 24 (254,521 nonzero
+    cells in 122,562 leaves), 91.3% off a dense table.
+    """
+    n_classes = int(model.n_classes_)
+    if n_classes > 256:
+        raise SystemExit(f"{name}: {n_classes} classes, but a leaf's class indices are stored "
+                         "in uint8 (`vi`); widen the section and bump BIN_VERSION")
+    cols = {k: [] for k in BIN_SECTION_DTYPES}
+    for k, est in enumerate(model.estimators_):
+        t = est.tree_
+        n = int(t.node_count)
+        feat = t.feature.astype(np.int64)
+        thr = t.threshold.astype(np.float64)
+        left = t.children_left.astype(np.int64)
+        right = t.children_right.astype(np.int64)
+        isleaf = feat < 0
+        internal = np.flatnonzero(~isleaf)
+        leaves = np.flatnonzero(isleaf)
+        where = f"{name} tree {k}"
+
+        bad = internal[left[internal] != internal + 1]
+        if len(bad):
+            raise SystemExit(
+                f"{where}: children_left[{bad[0]}] is {left[bad[0]]}, not {bad[0] + 1}. "
+                f"{len(bad)} of {len(internal)} internal nodes break the left-child-is-next "
+                "identity models.bin relies on, so this forest was not grown depth-first "
+                "(max_leaf_nodes is what does that). Store children_left as its own section "
+                "and bump BIN_VERSION, or drop max_leaf_nodes")
+        if not ((left[leaves] == -1).all() and (right[leaves] == -1).all()):
+            raise SystemExit(f"{where}: a leaf has a child other than sklearn's TREE_LEAF (-1); "
+                             "the decoder writes -1 into l and r at every leaf")
+        if not ((feat[leaves] == -2).all() and (thr[leaves] == -2.0).all()):
+            raise SystemExit(f"{where}: a leaf carries feature {int(feat[leaves].max())} / "
+                             f"threshold {float(thr[leaves].max())} rather than sklearn's "
+                             "TREE_UNDEFINED -2 / -2.0; the decoder writes those constants back "
+                             "at every leaf, and forest.js tells a leaf from an internal node "
+                             "by f < 0")
+        if len(internal) and int(feat[internal].max()) > 127:
+            raise SystemExit(f"{where}: splits on feature {int(feat[internal].max())}, but `f` "
+                             "is int8; widen it and bump BIN_VERSION")
+        off = right[internal] - internal
+        if len(internal) and int(off.max()) > 0xFFFF:
+            raise SystemExit(f"{where}: a right child sits {int(off.max())} nodes ahead, over "
+                             "the uint16 `r` section; widen it and bump BIN_VERSION")
+
+        val = t.value[:, 0, :].astype(np.float64)
+        worst_row = float(np.abs(val.sum(axis=1) - 1.0).max())
+        if worst_row > 1e-9:
+            raise SystemExit(
+                f"{where}: tree_.value rows miss 1.0 by {worst_row:.3e}, so this sklearn does "
+                "not store a normalized class distribution and `value * "
+                "weighted_n_node_samples` is not the class counts. Recover them the way this "
+                "version stores them, and bump BIN_VERSION")
+        counts = val * t.weighted_n_node_samples.astype(np.float64)[:, None]
+        resid = float(np.abs(counts - np.rint(counts)).max())
+        if resid > 1e-6:
+            raise SystemExit(f"{where}: a recovered leaf count misses an integer by {resid:.3e}. "
+                             "The counts are only exact for an unweighted fit; ship leaf "
+                             "probabilities instead and bump BIN_VERSION")
+        ci = np.rint(counts).astype(np.int64)[leaves]
+        nzr, nzc = np.nonzero(ci)
+        per_leaf = np.bincount(nzr, minlength=len(leaves))
+        if not (per_leaf > 0).all():
+            raise SystemExit(f"{where}: a leaf holds no samples at all, so the page would "
+                             "divide its class counts by zero")
+        if int(per_leaf.max()) > 255:
+            raise SystemExit(f"{where}: a leaf holds {int(per_leaf.max())} nonzero classes, over "
+                             "the uint8 `vk` section; widen it and bump BIN_VERSION")
+        if int(ci.max()) > 0xFFFF:
+            raise SystemExit(f"{where}: a leaf holds {int(ci.max())} samples of one class, over "
+                             "the uint16 `vc` section; widen it and bump BIN_VERSION")
+
+        cols["n"].append(np.array([n], np.uint32))
+        cols["bits"].append(np.packbits(isleaf.astype(np.uint8)))
+        cols["f"].append(feat[internal].astype(np.int8))
+        cols["t"].append(thr[internal])
+        cols["r"].append(off.astype(np.uint16))
+        cols["vk"].append(per_leaf.astype(np.uint8))
+        cols["vi"].append(nzc.astype(np.uint8))
+        cols["vc"].append(ci[nzr, nzc].astype(np.uint16))
+
+    return {k: (np.concatenate(v).astype(BIN_SECTION_DTYPES[k]) if v
+                else np.zeros(0, BIN_SECTION_DTYPES[k]))
+            for k, v in cols.items()}
+
+
+def write_models_bin(blobs, payload):
+    """Write models.bin, models.bin.gz and models.meta.json. Returns (raw, gz, meta) byte counts.
+
+    `payload` is the JSON export, already built and NOT modified here: the class lists, feature
+    tags, dims and threshold blocks are copied out of it, so the two formats cannot end up
+    describing different forests. What the meta file does not carry is the trees; those are the
+    binary.
+
+    models.meta.json ships beside models.bin for the reason the thresholds ride inside
+    models.json today -- a constant the page compares a probability against must be the one the
+    Python measured with, so the class lists and the threshold block travel with the forest
+    rather than living in the page. Two files have one failure mode that one file does not,
+    which is deploying a new models.bin over a stale models.meta.json, so the pair is bound by
+    a build id: the first 16 bytes of the SHA-256 of the section payload, written into both.
+    forest.js refuses a pair whose ids differ.
+
+    models.bin.gz is committed, unlike models.json.gz. GitHub Pages compresses text media types
+    on the fly but leaves application/octet-stream alone, so an uncompressed models.bin would
+    cross the wire at its full size. Serving the .gz as an opaque body and letting
+    DecompressionStream inflate it is the same route forest.js already takes when it is handed
+    a .gz, so it costs the page nothing new.
+    """
+    buf = io.BytesIO()
+    buf.write(b"\0" * BIN_HEADER_BYTES)
+    tables, nodes = {}, {}
+    for key in ("static", "motion", "digits"):
+        if key not in payload:
+            continue
+        secs = pack_binary_forest(blobs[key]["model"], key)
+        table = {}
+        for nm in BIN_SECTION_DTYPES:
+            # 8-byte align every section start. A Float64Array view over the page's ArrayBuffer
+            # is only legal at a multiple of 8, and one rule for all eight sections is cheaper
+            # to keep right than a per-dtype one; the padding costs at most 7 bytes a section.
+            while buf.tell() % 8:
+                buf.write(b"\0")
+            table[nm] = [buf.tell(), int(secs[nm].size)]
+            buf.write(secs[nm].tobytes())
+        tables[key] = table
+        nodes[key] = int(secs["n"].sum())
+
+    raw = bytearray(buf.getvalue())
+    build = hashlib.sha256(bytes(raw[BIN_HEADER_BYTES:])).digest()[:16]
+    raw[0:8] = BIN_MAGIC
+    raw[8:12] = struct.pack("<I", BIN_VERSION)
+    raw[12:16] = struct.pack("<I", BIN_ENDIAN_PROBE)
+    raw[16:20] = struct.pack("<I", BIN_HEADER_BYTES)
+    raw[20:24] = struct.pack("<I", 0)
+    raw[24:40] = build
+    raw = bytes(raw)
+
+    meta = {"format": "asl-forest/bin", "version": BIN_VERSION, "build": build.hex(),
+            "bytes": len(raw), "thresholds": payload["thresholds"]}
+    for key in ("static", "motion", "digits"):
+        if key not in payload:
+            continue
+        blk = {"classes": payload[key]["classes"], "feature": payload[key]["feature"],
+               "dim": payload[key]["dim"], "trees": len(payload[key]["trees"]),
+               "nodes": nodes[key], "sections": tables[key]}
+        if "thresholds" in payload[key]:
+            blk["thresholds"] = payload[key]["thresholds"]
+        meta[key] = blk
+
+    bout = os.path.join(HERE, "models.bin")
+    with open(bout, "wb") as fh:
+        fh.write(raw)
+    # Same gzip convention as models.json.gz: level 9, mtime 0, no stored name, so the .gz is a
+    # pure function of the .bin and two runs from the same pickles are byte-identical.
+    with open(bout + ".gz", "wb") as fh:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=fh, mtime=0, compresslevel=9) as gz:
+            gz.write(raw)
+    mout = os.path.join(HERE, "models.meta.json")
+    mraw = json.dumps(meta, separators=(",", ":"))
+    with open(mout, "w") as fh:
+        fh.write(mraw)
+    return len(raw), os.path.getsize(bout + ".gz"), len(mraw), build.hex()
+
+
 def main():
     static = load_blob("model_static.p")
     motion = load_blob("model_motion.p")
@@ -303,8 +606,19 @@ def main():
     with open(out + ".gz", "wb") as fh:
         with gzip.GzipFile(filename="", mode="wb", fileobj=fh, mtime=0) as gz:
             gz.write(raw.encode("utf-8"))
-    print(f"models.json      {len(raw)/1e6:6.2f} MB raw")
-    print(f"models.json.gz   {os.path.getsize(out + '.gz')/1e6:6.2f} MB")
+    print(f"models.json      {len(raw)/1e6:6.2f} MB raw ({len(raw)} B)")
+    print(f"models.json.gz   {os.path.getsize(out + '.gz')/1e6:6.2f} MB "
+          f"({os.path.getsize(out + '.gz')} B)")
+
+    blobs = {"static": static, "motion": motion}
+    if digits is not None:
+        blobs["digits"] = digits
+    n_bin, n_gz, n_meta, build = write_models_bin(blobs, payload)
+    print(f"models.bin       {n_bin/1e6:6.2f} MB raw ({n_bin} B), build {build[:16]}")
+    print(f"models.bin.gz    {n_gz/1e6:6.2f} MB ({n_gz} B)  <- the file to serve; GitHub "
+          f"Pages does not compress application/octet-stream, so this .gz is committed")
+    print(f"models.meta.json {n_meta/1e3:6.1f} KB ({n_meta} B): classes, feature tags, "
+          f"thresholds, section offsets")
     print(f"static forest    {n_static:7d} nodes, {len(payload['static']['trees'])} trees, "
           f"{payload['static']['feature']} {payload['static']['dim']}-D, "
           f"{len(payload['static']['classes'])} classes  (budget {NODE_BUDGET})")

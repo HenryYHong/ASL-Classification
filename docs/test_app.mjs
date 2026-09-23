@@ -209,7 +209,7 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
     { static: { ...prepared.static, feature: 'static/v9' } }, { ...golden, cases: [one] }));
   const src = readFileSync(join(HERE, 'app.js'), 'utf8');
   check('load() reports a checkGolden throw as a self-check problem',
-    /catch \(err\) \{[^}]*could not be run against this models\.json[\s\S]*?false, 'selfcheck'\)/.test(src));
+    /catch \(err\) \{[^}]*could not be run against this model export[\s\S]*?false, 'selfcheck'\)/.test(src));
   check('...and only a golden.json fetch failure is "not run"',
     /golden = await watchdog\(res\.json\(\), 'fetching golden\.json'\);\s*\} catch \(err\) \{\s*\/\/[^\n]*\n(\s*\/\/[^\n]*\n)*\s*ui\.selfcheck\.textContent = 'not run'/.test(src));
 }
@@ -324,15 +324,17 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
   // deliberately not wrapped, so its old 'loading the MediaPipe WASM' label must be gone.
   check('a 20 s watchdog wraps every download, each labeled with what it fetches',
     /const LOAD_WATCHDOG_S = 20;/.test(src)
-    && /await watchdog\(loadModels\('\.\/models\.json'\), 'fetching models\.json'\)/.test(src)
+    && /await watchdog\(loadModels\('\.\/models\.bin\.gz', '\.\/models\.meta\.json'\),\s*\n\s*'fetching models\.bin\.gz and models\.meta\.json'\)/.test(src)
     && /await watchdog\(fetch\('\.\/golden\.json'\), 'fetching golden\.json'\)/.test(src)
     && /await watchdog\(res\.json\(\), 'fetching golden\.json'\)/.test(src)
     && /await watchdog\(import\(`\$\{MP_CDN\}\/vision_bundle\.mjs`\), 'loading MediaPipe from the CDN'\)/.test(src)
     && /await watchdog\(createLandmarker\(vision, fileset\),\s*\n\s*'fetching the MediaPipe WASM from cdn\.jsdelivr\.net or the hand '\s*\n\s*\+ 'landmarker model from storage\.googleapis\.com'\)/.test(src)
     && !/watchdog\(vision\.FilesetResolver/.test(src) && !/loading the MediaPipe WASM/.test(src)
     && (src.match(/await watchdog\(/g) || []).length === 5);
-  check('the load line states the real size of models.json',
-    /fetching models\.json \(about 17 MB, about 3 MB compressed, '\s*\n\s*\+ 'cached after the first time\)/.test(src)
+  // 1,183,438 B of models.bin.gz + 982 B of models.meta.json under Pages' own gzip = 1,184,420 B
+  // on the wire, measured on the committed export; models.json would be 3,703,069 B at gzip -5.
+  check('the load line states the real size of what the page fetches',
+    /fetching models\.bin\.gz and models\.meta\.json \(about 1\.18 MB, '\s*\n\s*\+ 'already compressed, cached after the first time\)/.test(src)
     && /fetching golden\.json \(the self-check cases\)/.test(src));
   check('postLog drops keepalive above ~60 KB',
     /const KEEPALIVE_MAX_BYTES = 60 \* 1024;/.test(src)
@@ -436,32 +438,45 @@ for (const fps of [15, 30]) {
   const missing = ids.filter((id) => !new RegExp(`id="${id}"`).test(html));
   check(`all ${ids.length} element ids exist in index.html`, missing.length === 0,
     missing.length ? `missing ${missing.join(', ')}` : '');
-  // The accuracy numbers are the ones crossval_static.py / crossval_strangers.py print, with
-  // the hold-level interval, the cross-signer figure named as the one a visitor should plan
-  // around, and the previous release's figures labeled as such. A page that rounds them up is
-  // the one thing the brief forbids outright.
+  // The accuracy numbers are the ones crossval_static.py / crossval_signers.py /
+  // crossval_strangers.py print, with the hold-level interval, and the BY-SIGNER figure named
+  // as the one a visitor should plan around rather than the author's own fold. A page that
+  // rounds them up is the one thing the brief forbids outright, so every figure here is a
+  // number one of those harnesses printed: pooled 0.926 (4,515/4,878) and cross-day 0.895 at
+  // seed 0, bootstrap interval [0.877, 0.965] over the 57 session x letter bursts.
   check('index.html states the measured accuracies with the interval',
-    /0\.91 of 4,878 held-out frames/.test(html) && /0\.86(&ndash;|-)0\.96/.test(html)
-    && /0\.87 on the one fold recorded on a different day/.test(html)
-    && /other people's hands from two public/.test(html));
-  // The repository's own run beside the published figure: crossval_static.py seeds 0-2 on the
-  // shipped recipe give 0.873 / 0.869 / 0.870 on the cross-day fold, and the J/Z figure counts
-  // events, not gestures: 102 events = 74 J/Z gestures + 28 movements over 80 prompted items.
-  check('...with the repository run beside the cross-day figure and the J/Z events itemized',
-    /0\.873 in the repository's\s+own run, 0\.869(&ndash;|-)0\.873 over three seeds/.test(html)
+    /0\.926 of 4,878 held-out frames/.test(html) && /0\.877(&ndash;|-)0\.965/.test(html)
+    && /0\.895 on the one fold recorded on a different day/.test(html)
+    && /other people's hands from\s+three public/.test(html));
+  // The three-seed spread beside the published figure: crossval_static.py seeds 0-2 on the
+  // shipped recipe give 0.8949 / 0.8848 / 0.8894 on the cross-day fold, and the J/Z figure
+  // counts events, not gestures: 102 events = 74 J/Z gestures + 28 movements over 80 items.
+  check('...with the three-seed spread beside the cross-day figure and the J/Z events itemized',
+    /\(0\.8848(&ndash;|-)0\.8949 over three seeds\)/.test(html)
     && /J and Z: 0\.95 over 102 events \(74 J\/Z gestures and 28 movements\) in 80 prompted items/.test(html));
-  // The cross-signer number (crossval_strangers.py: ASLNow held out, 0.790 +- 0.003) is what a
-  // visitor should plan around, and the page says so.
-  check('index.html states the cross-signer number as the one a visitor should plan around',
-    /1,874 frames from multiple participants captured with this page's own landmarker/.test(html)
-    && /0\.79, and that is the number to plan around if you are not the author/.test(html));
-  // The weak letters are the ones crossval_static.py (cross-day fold: M 0.01) and
-  // crossval_strangers.py (ASLNow held out: G, R, U, D, S) print.
+  // What a visitor should plan around is now MEASURED BY SIGNER, not bounded: crossval_signers.py
+  // holds out one of ten named signers at a time (0.9406 over three seeds, 0.9379-0.9453), and
+  // crossval_strangers.py holds out a whole second set (0.8292 over three seeds, 0.8212-0.8362)
+  // and scores the permanent never-train holdout (0.889). The page must lead with those and say
+  // plainly that the author's own folds are not a visitor's number.
+  check('index.html leads with the by-signer numbers, not the author\'s own fold',
+    /If you are not the author, the numbers to plan around are\s+the ones measured by holding out other people/.test(html)
+    && /ten named signers: 0\.9406 across three seeds \(0\.9379(&ndash;|-)0\.9453\)/.test(html)
+    && /1,874\s+frames from multiple participants captured with this page's own landmarker/.test(html)
+    && /0\.8292\s+across three seeds \(0\.8212(&ndash;|-)0\.8362\)/.test(html)
+    && /five signers nothing here is ever\s+trained on, reads 0\.889/.test(html)
+    && /The author's own folds are higher and they are not yours/.test(html));
+  // The runtime row, from replay_strangers.py over temporal/openhands_replay.json: 266 clips,
+  // 96 exact, 170 silent, ZERO wrong letters. The zero is the claim worth pinning.
+  check('...and states the end-to-end video result with its zero wrong letters',
+    /266 video clips of other people fingerspelling gave the right letter on 96, the wrong\s+letter on none, and silence on the other 170/.test(html));
+  // The weak letters are the ones crossval_signers.py (U 0.671 as R, R 0.703 as U, C 0.816,
+  // S 0.814) and crossval_static.py (cross-day fold: M 0.12) print.
   check('index.html names the weak letters on both folds',
-    /the author's M is not read at all/.test(html)
-    && /on other people's hands G, R, U, D and S are the least reliable/.test(html));
+    /the author's M is read on about one frame in eight/.test(html)
+    && /on other people's hands U and R are read as each\s+other, with C, S and G next least reliable/.test(html));
   check('...labels the previous release\'s numbers as previous',
-    /previous\s+release measured 0\.861 and 0\.763 on the author's folds and was one signer only/.test(html)
+    /previous\s+release measured 0\.910 and 0\.870 on the author's folds and had no by-signer number at all/.test(html)
     && /replaces rather than improves on the earlier 0\.864/.test(html));
   check('index.html says fingerspelling only', /no ASL word signs, no grammar/i.test(html));
   check('index.html explains the word break, common words first',
@@ -475,9 +490,15 @@ for (const fps of [15, 30]) {
 // returns is the shape app.js consumes (thresholds object, prepared models with classes/trees).
 {
   const p = predictProba(prepared.static, golden.cases[firstStatic].static_feature);
+  const appSrc = readFileSync(join(HERE, 'app.js'), 'utf8');
   check('predictProba returns one probability per class', p.length === models.static.classes.length);
-  check('loadModels is the only fetch of models.json in app.js',
-    /loadModels\('\.\/models\.json'\)/.test(readFileSync(join(HERE, 'app.js'), 'utf8')));
+  // The page fetches the binary pair, not the 20,361,559 B models.json that this file still
+  // reads off disk as the readable reference. forest.js decides by the bytes, not the name, and
+  // returns the identical object either way -- test_forest.mjs is what proves that, node by node.
+  check('loadModels fetches the binary pair, and is the only model fetch in app.js',
+    /loadModels\('\.\/models\.bin\.gz', '\.\/models\.meta\.json'\)/.test(appSrc)
+    && !/loadModels\('\.\/models\.json'\)/.test(appSrc)
+    && (appSrc.match(/loadModels\(/g) || []).length === 1);
   check('thresholds carry the constants the overlay draws',
     [th.V_STILL, th.V_MOVE_ARMED, th.V_MOVE_UNARMED, th.SHAPE_STABLE, th.RIGID_VETO,
       th.GATE_ARM_FRAC, th.T_MAX, th.L_MIN, th.L_MAX].every(Number.isFinite));
@@ -545,7 +566,12 @@ for (const fps of [15, 30]) {
     globalThis.fetch = async (url) => {
       const name = String(url).replace(/^\.\//, '');
       let buf = readFileSync(join(HERE, name));
-      if (name === 'models.json' && mapModels) buf = Buffer.from(JSON.stringify(mapModels(JSON.parse(buf.toString()))));
+      // The page loads models.bin.gz + models.meta.json, so a scenario that bends the export
+      // bends the META file: the class lists, feature tags and thresholds all live there now,
+      // and the .bin beside it is only the trees. readFileSync hands back the gzip bytes and
+      // forest.js gunzips them through the platform's DecompressionStream, exactly as a browser
+      // does with a Pages-served .gz.
+      if (name === 'models.meta.json' && mapModels) buf = Buffer.from(JSON.stringify(mapModels(JSON.parse(buf.toString()))));
       if (name === 'golden.json' && mapGolden) buf = Buffer.from(JSON.stringify(mapGolden(JSON.parse(buf.toString()))));
       return { ok: true, status: 200, statusText: 'OK',
         arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),

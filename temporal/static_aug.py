@@ -1,7 +1,7 @@
 """Training-side augmentation and filtering for the static-letter forest.
 
-Two things happen to a static training frame before it is featurized, and both happen to
-TRAINING frames only -- a held-out fold or a live frame never goes through either:
+Three things happen to a static training frame before it is featurized, and all three happen
+to TRAINING frames only -- a held-out fold or a live frame never goes through any of them:
 
   1. RULE FILTER. Each letter has a defining-geometry rule (RULES below): the conditions a
      hand must satisfy to be that letter at all, written as thresholds on the per-frame
@@ -29,7 +29,12 @@ TRAINING frames only -- a held-out fold or a live frame never goes through eithe
      leave-one-session-out accuracy, 0.782 without it to 0.759 with it (S3 0.823 -> 0.661),
      having only ever been justified by within-session confidence.
 
-Both functions work on (n, 21, >=2) arrays whose [..., :2] are isotropic, handedness-
+  3. PER-LETTER CAP. cap_per_letter trims the author's own pooled block to at most
+     train_static.AUTHOR_CAP frames per letter, evenly spaced. The comment on that constant
+     carries the measurement; the function's docstring carries why "evenly spaced" and why
+     "pooled".
+
+All three functions work on (n, 21, >=2) arrays whose [..., :2] are isotropic, handedness-
 canonicalized x,y (what train_static.load / load_extra return). Extra trailing channels are
 carried through untouched.
 """
@@ -162,6 +167,30 @@ def filter_training(per_class, ruleset="strong"):
     still a frame the signer meant as that letter, and the runtime will see such frames.
     """
     return [P[keep_mask(P, LETTERS[c], ruleset)] if len(P) else P for c, P in enumerate(per_class)]
+
+
+def cap_per_letter(per_class, k):
+    """[per-class (n,21,>=2)] -> at most `k` frames per letter, evenly spaced through the block.
+
+    A TRAINING-side cap, like filter_training above; a test fold never goes through it.
+
+    Evenly spaced and not the first k, and not a random draw either. The block handed in is one
+    signer's sessions concatenated in recording order, so np.linspace over it keeps frames from
+    every session and from the whole length of every hold, which is exactly the variety a cap
+    is meant to preserve. The first k would be the first seconds of the oldest session, and a
+    random draw would move with the seed while the point of the cap is to be part of the recipe.
+
+    Why cap at all, and why on the POOLED per-letter block rather than per session: the author's
+    four sessions hold 400 frames of T and 308 of C against 161 of E and 100 of most letters,
+    and nothing exceeds 160 within any ONE session, so a per-session cap is a no-op (the first
+    attempt at this measured identical to no cap for exactly that reason). Pooled, the cap is
+    what stops the letters the author re-recorded most from outvoting the rest -- and, with ten
+    other signers now on the training side, from outvoting them too.
+    """
+    out = []
+    for P in per_class:
+        out.append(P[np.linspace(0, len(P) - 1, k).round().astype(int)] if len(P) > k else P)
+    return out
 
 
 # ---------------------------------------------------------------- jitter

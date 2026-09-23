@@ -200,7 +200,7 @@ def run_offline(out_path):
     print(f"  sigma p99 (trailing window): {_pct(s, 99):.3f}")
 
     p12 = sig["path12"]
-    print(f"\nL_MIN safety, palm-centre path over any {L_WINDOW:.1f} s window of a held sign:")
+    print(f"\nL_MIN safety, palm-center path over any {L_WINDOW:.1f} s window of a held sign:")
     print(f"  median {np.median(p12):.3f}   p95 {_pct(p12, 95):.3f}   max {p12.max():.3f} palm"
           f"   ({len(p12)} windows)")
     verdict = "excludes every hold" if p12.max() < DEFAULT.L_MIN else "DOES NOT exclude every hold"

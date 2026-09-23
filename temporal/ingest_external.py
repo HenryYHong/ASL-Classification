@@ -21,10 +21,31 @@ and evaluate.py treats it as held-out by construction rather than by remembering
     ../.venv/bin/python temporal/ingest_external.py --frames ~/Downloads/fswild/seq --label NONE \\
         --signer fswild --session EXT --fps 30
 
-Run label_events.py over the result BEFORE trusting it. Footage that begins mid-gesture never
-arms a gate, because a track starts only on a rising edge from a parked launch pose, and
-label_events will cut zero events from it. That diagnostic is cheap and it is the fastest way
-to find out whether a download was worth the disk.
+Run label_events.py over the result BEFORE trusting it, AND PASS --out. Footage that begins
+mid-gesture never arms a gate, because a track starts only on a rising edge from a parked
+launch pose, and label_events will cut zero events from it. That diagnostic is cheap and it is
+the fastest way to find out whether a download was worth the disk. It is also destructive if
+run bare: label_events.py --out defaults to temporal/events.npz, the committed motion training
+set, so running the diagnostic on eight ingested clips replaces 70,488 bytes of prompted events
+with 3,610 bytes cut from someone else's YouTube video, and nothing says so. I did exactly that
+while testing this file. Send it somewhere else.
+
+IT HAS NOW BEEN RUN, on video, twice, and this paragraph is the record of it. First on four
+sources of third-party J and Z footage -- three CC BY YouTube channels and one Signbank entry,
+one J and one Z each -- which produced the eight clips in ext2.npz and, through them, the first
+cross-signer numbers the motion branch has ever had: 4 of the 8 clips cut a runtime-reachable
+span, 3 of 3 reachable J spans emitted J, the one reachable Z span read MOVE (Z 0.173), and
+160.1 s of the same signers' fingerspelling containing no J and no Z cut 5 spans and emitted
+nothing at all -- 0.00 false J/Z per minute. Second on 15 OpenHands clips (train/j, train/z and
+test/j, CC BY 4.0), of which 8 were kept and 7 failed --min-tracked at 0-56%. That second run
+exercised the fresh path, the APPEND path onto its own output, the append path onto a
+collect_motion.py file carrying one frame size for five clips (frame_sizes broadcast it per
+clip, which is what it exists for), and the --frames path on two numbered JPEG sequences, which
+had never been run at all. Everything worked as written except the shared MediaPipe tracker,
+which is now one per clip and is the only code change this release makes here (fresh_hands()).
+The Signbank and YouTube clips are CC BY-NC-SA and CC BY respectively and are NOT committed,
+neither the video nor the landmarks; SOURCES.md carries the URLs and the recipe. What is
+committed is a result, not footage: temporal/openhands_replay.json, from replay_strangers.py.
 
 Not implemented: the Google ASL Fingerspelling parquet format. It ships MediaPipe landmarks
 directly, which makes it the most natural fit of all the sources, but it may not record the
@@ -75,8 +96,11 @@ def numeric_key(path):
     return (int(digits) if digits else 0, stem)
 
 
-def landmarks_from_frames(frame_iter, hands, drawer=None):
-    """Run MediaPipe over an iterable of (timestamp, BGR frame). Returns per-frame arrays."""
+def landmarks_from_frames(frame_iter, hands):
+    """Run MediaPipe over an iterable of (timestamp, BGR frame). Returns per-frame arrays.
+
+    `hands` must be an instance nothing else has fed. See fresh_hands().
+    """
     lms, stamps, handed = [], [], []
     size = None
     for t, frame in frame_iter:
@@ -98,6 +122,24 @@ def landmarks_from_frames(frame_iter, hands, drawer=None):
         stamps.append(t)
     return (np.array(lms, dtype=np.float32), np.array(stamps, dtype=np.float32),
             np.array(handed), size)
+
+
+def fresh_hands():
+    """One MediaPipe tracker, for ONE clip, with the runtime's own detection settings.
+
+    static_image_mode=False means the tracker carries state between frames: after a hit it
+    searches the next frame near the last box instead of re-detecting. That is right inside a
+    clip and wrong between clips, because these are unrelated videos and clip k's last frame is
+    not a prior for clip k+1's first. One instance was shared across the whole run until this
+    release, and the cost is measurable: on 18 OpenHands clips read both ways, 3 lost tracking
+    on frames they otherwise held (J/2 0.938 vs 1.000, J/4 0.966 vs 1.000, A/3 0.917 vs 1.000),
+    and the mean tracked fraction fell from 0.794 to 0.784. None of those three crossed the
+    0.60 --min-tracked line here, but they could have: a shared tracker makes both the
+    landmarks and the keep/skip decision depend on what order the files were read in, which is
+    not a property an ingest may have.
+    """
+    return mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1,
+                                    min_detection_confidence=0.5, min_tracking_confidence=0.3)
 
 
 def iter_video(path):
@@ -185,27 +227,26 @@ def main():
         print(f"appending to {len(clips)} existing clips (frame sizes {sorted(set(sizes))})\n")
 
     kept = skipped = 0
-    with mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=1,
-                                  min_detection_confidence=0.5,
-                                  min_tracking_confidence=0.3) as hands:
-        for path, it in sources:
+    for path, it in sources:
+        # One tracker per clip, never one per run: see fresh_hands().
+        with fresh_hands() as hands:
             lm, ts, lr, size = landmarks_from_frames(it, hands)
-            name = os.path.basename(path)
-            if len(lm) < 3 or size is None:
-                print(f"  skip {name}: fewer than 3 readable frames")
-                skipped += 1
-                continue
-            tracked = float(np.isfinite(lm[:, 0, 0]).mean())
-            if tracked < args.min_tracked:
-                print(f"  skip {name}: only {tracked:.0%} of frames tracked a hand")
-                skipped += 1
-                continue
-            clips.append(lm); stamps.append(ts); handed.append(lr)
-            labels.append(args.label); sessions.append(args.session); signers.append(args.signer)
-            sizes.append((int(size[0]), int(size[1]))); prompts.append("")
-            kept += 1
-            print(f"  {name}: {len(lm)} frames, {tracked:.0%} tracked, "
-                  f"{size[0]}x{size[1]}, {ts[-1]:.2f}s")
+        name = os.path.basename(path)
+        if len(lm) < 3 or size is None:
+            print(f"  skip {name}: fewer than 3 readable frames")
+            skipped += 1
+            continue
+        tracked = float(np.isfinite(lm[:, 0, 0]).mean())
+        if tracked < args.min_tracked:
+            print(f"  skip {name}: only {tracked:.0%} of frames tracked a hand")
+            skipped += 1
+            continue
+        clips.append(lm); stamps.append(ts); handed.append(lr)
+        labels.append(args.label); sessions.append(args.session); signers.append(args.signer)
+        sizes.append((int(size[0]), int(size[1]))); prompts.append("")
+        kept += 1
+        print(f"  {name}: {len(lm)} frames, {tracked:.0%} tracked, "
+              f"{size[0]}x{size[1]}, {ts[-1]:.2f}s")
 
     if not kept:
         print("\nnothing ingested. If most clips failed the tracking threshold the footage is "
@@ -228,9 +269,13 @@ def main():
                         frame_size=np.array(sizes, dtype=np.int32))
     print(f"\nwrote {args.out}: {kept} clips kept, {skipped} skipped, {len(clips)} total")
     print(f"signers: {sorted(set(signers))}   sessions: {sorted(set(sessions))}")
+    # --out is not optional in this suggestion. Without it label_events.py overwrites
+    # temporal/events.npz, the committed motion training set, with the events it cut here.
+    events_out = os.path.splitext(args.out)[0] + "_events.npz"
     print("\nNext, and do this before trusting any of it:")
-    print(f"  ../.venv/bin/python temporal/label_events.py --clips {args.out}")
+    print(f"  ../.venv/bin/python temporal/label_events.py --clips {args.out} --out {events_out}")
     print("If J/Z clips cut zero events, the footage starts mid-gesture and never arms a gate.")
+    print("Keep the --out. Bare, it replaces temporal/events.npz and says nothing.")
     return 0
 
 

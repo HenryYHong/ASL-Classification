@@ -619,7 +619,12 @@ def main():
             print(f"WARNING: only {tracked:.0%} of frames tracked a hand. Below ~90% the "
                   "segmenter loses tracks to detection gaps. More light, hand larger in frame.")
         print("\nNext:")
-        print(f"  ../.venv/bin/python temporal/label_events.py --clips {args.out}")
+        # label_events.py refuses a foreign --clips with its default --out, so the suggestion
+        # has to carry --out whenever this recording did not land at the default path.
+        nxt = f"  ../.venv/bin/python temporal/label_events.py --clips {args.out}"
+        if os.path.realpath(args.out) != os.path.realpath(DEFAULT_OUT):
+            nxt += f" --out {os.path.splitext(args.out)[0]}_events.npz"
+        print(nxt)
         return
 
     # static_image_mode=False enables MediaPipe's frame-to-frame tracking, which is both

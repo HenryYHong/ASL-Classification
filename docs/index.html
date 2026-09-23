@@ -322,19 +322,29 @@
       device.
     </p>
     <p class="note">
-      Trained on one signer across four sessions plus other people's hands from two public
-      landmark sets. Static letters, each of the author's sessions held out in turn:
-      0.91 of 4,878 held-out frames (95% interval about 0.86&ndash;0.96 over the 57 recorded
-      holds), and 0.87 on the one fold recorded on a different day (0.873 in the repository's
-      own run, 0.869&ndash;0.873 over three seeds). On other people's hands the forest never
-      saw, 1,874 frames from multiple participants captured with this page's own landmarker:
-      0.79, and that is the number to plan around if you are not the author. The previous
-      release measured 0.861 and 0.763 on the author's folds and was one signer only.
+      Trained on one signer across four sessions plus 8,561 frames of other people's hands from
+      three public landmark sets. <b>If you are not the author, the numbers to plan around are
+      the ones measured by holding out other people.</b> Holding out one signer at a time across
+      ten named signers: 0.9406 across three seeds (0.9379&ndash;0.9453), over all 23,984 of
+      their held-out frames. Holding out a whole second set the forest never saw &mdash; 1,874
+      frames from multiple participants captured with this page's own landmarker &mdash; 0.8292
+      across three seeds (0.8212&ndash;0.8362). A third set, five signers nothing here is ever
+      trained on, reads 0.889. Run through this page's own logic rather than frame by frame,
+      266 video clips of other people fingerspelling gave the right letter on 96, the wrong
+      letter on none, and silence on the other 170.
+    </p>
+    <p class="note">
+      The author's own folds are higher and they are not yours: 0.926 of 4,878 held-out frames
+      with each of his sessions held out in turn (95% interval 0.877&ndash;0.965 over the 57
+      recorded holds), and 0.895 on the one fold recorded on a different day
+      (0.8848&ndash;0.8949 over three seeds). The previous
+      release measured 0.910 and 0.870 on the author's folds and had no by-signer number at all.
       J and Z: 0.95 over 102 events (74 J/Z gestures and 28 movements) in 80 prompted items,
       cross-validated by prompted item (the labels changed in an earlier release, so that
       replaces rather than improves on the earlier 0.864). Accuracy varies with hand shape
-      and lighting; across days the author's M is not read at all (a data problem with the
-      2024 recording), and on other people's hands G, R, U, D and S are the least reliable.
+      and lighting; across days the author's M is read on about one frame in eight (a data
+      problem with the 2024 recording), and on other people's hands U and R are read as each
+      other, with C, S and G next least reliable.
     </p>
     <p class="note">
       Numbers mode (experimental) reads the ASL digits 0&ndash;9 with a separate forest trained

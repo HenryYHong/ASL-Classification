@@ -48,6 +48,49 @@ def to_isotropic(lm, width, height):
     return out
 
 
+def frame_aspect(frame_size, n, where="frame_size"):
+    """The W/H each of `n` frames must be corrected by. -> (1,) for one size, (n,) for per-frame.
+
+    A source may store ONE (W,H) pair for the whole file (every frame from one camera at one
+    resolution: the author's sessions, the Ankara photos, ASL-HG, ayuraj) or ONE PAIR PER FRAME
+    (a set of crops, or a mixed-resolution capture). Both loaders used to write
+    np.asarray(d["frame_size"]).ravel()[:2], which on an (N,2) array silently takes image 0's
+    size and applies it to every frame. That cannot be seen downstream: u = x*(W/H) is a
+    plausible number for any W/H, so the run prints an accuracy rather than an error, which is
+    the same failure SOURCES.md refuses the Google parquet set over. Measured on the real path
+    -- ASL-HG re-written with its true per-image sizes, image 0 at 106x119 -- taking image 0's
+    size for all 65,431 records scores 0.7814 against 0.8212 done properly, and -0.053 with no
+    correction at all.
+
+    Anything that is neither (2,) nor (n,2) raises, for the reason load_extra already refuses a
+    missing frame_size: the aspect is load-bearing and is not guessed.
+    """
+    wh = np.asarray(frame_size)
+    if wh.ndim == 1 and wh.shape[0] == 2:
+        return np.array([float(wh[0]) / float(wh[1])])
+    if wh.ndim == 2 and wh.shape == (n, 2):
+        return wh[:, 0].astype(np.float64) / wh[:, 1].astype(np.float64)
+    raise SystemExit(
+        f"{where}: frame_size has shape {wh.shape} for {n} frames. It must be one (W,H) pair "
+        "for the file, or one pair per frame; any other shape used to be ravel()'d down to "
+        "image 0's size and applied to everything, which is invisible in every number this "
+        "pipeline prints.")
+
+
+def apply_aspect(lm, aspect):
+    """(...,21,>=2) -> (...,21,2), scaling x by `aspect` from frame_aspect (one value or one
+    per frame). The per-frame case broadcasts over the 21 landmarks."""
+    lm = np.asarray(lm, dtype=np.float64)
+    a = np.asarray(aspect, dtype=np.float64)
+    if a.size == 1:
+        a = a.reshape(())
+    else:
+        if len(a) != lm.shape[0]:
+            raise SystemExit(f"apply_aspect: {len(a)} aspects for {lm.shape[0]} frames")
+        a = a.reshape((-1,) + (1,) * (lm.ndim - 2))
+    return np.stack([lm[..., 0] * a, lm[..., 1]], axis=-1)
+
+
 def canonicalize_handedness(P, handedness):
     """Mirror left hands onto the right-hand convention.
 
@@ -563,7 +606,7 @@ def event_features(times, P_seq, arm, handedness=None):
     net_mag = float(np.linalg.norm(net))
     straightness = net_mag / L if L > 1e-9 else 0.0
 
-    # [0:32] path shape: resample by arc length, centre on its own centroid, scale by S_evt.
+    # [0:32] path shape: resample by arc length, center on its own centroid, scale by S_evt.
     # Centring across TIME is the same trick the existing 42-D feature applies across
     # LANDMARKS: a J traced top-left and the same J traced bottom-right give identical
     # numbers. Absolute frame position never enters any model.
@@ -601,7 +644,7 @@ def event_features(times, P_seq, arm, handedness=None):
     s_last = float(np.median(S_t[-third:]))
     scale_ratio = (s_last / s_first - 1.0) if s_first > 1e-9 else 0.0
 
-    # [70:78] articulation: the tip measured RELATIVE to the palm centre. In a genuine J or Z
+    # [70:78] articulation: the tip measured RELATIVE to the palm center. In a genuine J or Z
     # the finger is rigid and the arm carries it, so these are near zero. A wave or a finger
     # wiggle moves the tip relative to the palm and lights this block up.
     rel = (P[:, tip_idx, :] - palm_centre(P)) / S_t[:, None]

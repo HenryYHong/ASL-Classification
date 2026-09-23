@@ -3,7 +3,8 @@
 crossval_static.py scores frames; this scores what the runtime would have SHOWN. Every hold
 of every session is replayed through Segmenter.step with its recorded timestamps (the S1
 archive at 1/15 s, the JPEG burst rate), a forest that never saw that session (the
-leave-one-session-out fold model, strangers on its training side as in the shipped recipe),
+leave-one-session-out fold model, both shipped caps and the strangers on its training side,
+exactly as train_static.py fits the one that ships),
 the committed motion forest attached so a false track start counts, and thresholds.DEFAULT.
 One fresh Segmenter per hold: the between-hold frames were never stored, so cooldown and
 duplicate suppression across holds are not exercised. A deferred I or D is released by
@@ -14,13 +15,21 @@ was the first emission wrong, was the hold silent, how long from the first frame
 first emission. Read the pooled row and the cross-day (S1) row; S2-S4 were recorded the same
 evening.
 
-The vote floor is what this measures the cost of: a higher VOTE_PROB_FLOOR silences the
-relaxed hands in idle_gate.py and, at the same time, the author's least confident real holds.
-The two scripts are read together.
+The vote floor is what this measures the cost of: a higher floor silences the relaxed hands in
+idle_gate.py and, at the same time, the author's least confident real holds. The two scripts
+are read together, and together they chose the per-letter profile that ships
+(thresholds.VOTE_PROB_LETTER). On this forest, over the 71 holds at each of seeds 0, 1 and 2:
+
+    per letter (G 0.75, rest 0.55)   exact 68/71   silent 2  {S1-G, S2-K}   idle 0/43
+    flat 0.55                        exact 69/71   silent 1  {S2-K}         idle 4-5/43, all G
+    flat 0.72 and flat 0.75          exact 61/71   silent 9                 idle 0/43
+
+--floor is a FLAT what-if: it moves VOTE_PROB and VOTE_PROB_FLOOR together and clears the
+per-letter profile, which is how the middle and bottom rows above were measured.
 
     ./.venv/bin/python temporal/replay_static.py                  # shipped recipe, seed 0
     ./.venv/bin/python temporal/replay_static.py --henry-only     # the one-signer forest
-    ./.venv/bin/python temporal/replay_static.py --floor 0.55     # a threshold what-if
+    ./.venv/bin/python temporal/replay_static.py --floor 0.55     # a flat-floor what-if
 """
 import argparse
 import os
@@ -32,6 +41,7 @@ from dataclasses import replace
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import static_aug as A  # noqa: E402
 import strangers as ST  # noqa: E402
 import train_static as T  # noqa: E402
 from segmenter import Segmenter  # noqa: E402
@@ -75,11 +85,20 @@ def raw_holds():
     return out
 
 
-def fold_models(src, seed, henry_only, n_jobs):
-    strangers = None if henry_only else ST.load_strangers()[0]
+def fold_models(src, seed, henry_only, n_jobs, author_cap=None, aslhg=True):
+    """One forest per held-out session, on the SHIPPED training recipe minus that session.
+
+    The caps are part of that recipe (train_static.AUTHOR_CAP on the author's pooled training
+    sessions, strangers.ASLHG_CAP inside load_strangers), so they are applied here too --
+    otherwise this replay would be measuring what a different forest would have shown.
+    """
+    author_cap = T.AUTHOR_CAP if author_cap is None else author_cap
+    strangers = None if henry_only else ST.load_strangers(aslhg=aslhg)[0]
     models = {}
     for held in src:
         train = ST.merge(*[src[s][0] for s in src if s != held])
+        if author_cap:
+            train = A.cap_per_letter(train, author_cap)
         if strangers is not None:
             train = ST.merge(train, strangers)
         X, y, _ = T.training_rows(train, seed=seed)
@@ -101,11 +120,17 @@ def replay_hold(model, motion, letter, lm, st, labs, w, h, th):
     return out
 
 
-def run(seed=0, henry_only=False, floor=None, n_jobs=4):
+def run(seed=0, henry_only=False, floor=None, n_jobs=4, author_cap=None, models=None, src=None,
+        aslhg=True):
     import crossval_static as CV
-    th = DEFAULT if floor is None else replace(DEFAULT, VOTE_PROB_FLOOR=floor, VOTE_PROB=max(DEFAULT.VOTE_PROB, floor))
-    src = CV.sessions()
-    models = fold_models(src, seed, henry_only, n_jobs)
+    # One knob: VOTE_PROB and VOTE_PROB_FLOOR both move to `floor`. They are equal in DEFAULT
+    # on purpose (thresholds.py), so this is the shipped rule at 0.75 and a monotone sweep
+    # everywhere else; moving the floor alone would leave the confident route at 0.75 and the
+    # sweep would flatten above it.
+    th = DEFAULT if floor is None else replace(DEFAULT, VOTE_PROB_FLOOR=floor, VOTE_PROB=floor,
+                                               VOTE_PROB_LETTER={})
+    src = CV.sessions() if src is None else src
+    models = fold_models(src, seed, henry_only, n_jobs, author_cap, aslhg) if models is None else models
     motion = pickle.load(open(os.path.join(HERE, "model_motion.p"), "rb"))
     holds = raw_holds()
     rows = []
@@ -135,7 +160,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--henry-only", action="store_true", help="fold models without the strangers")
-    ap.add_argument("--floor", type=float, default=None, help="VOTE_PROB_FLOOR what-if (default: thresholds.DEFAULT)")
+    ap.add_argument("--floor", type=float, default=None,
+                    help="a FLAT floor what-if: VOTE_PROB and VOTE_PROB_FLOOR both move here and "
+                         "VOTE_PROB_LETTER is cleared (default: thresholds.DEFAULT, which is per letter)")
     ap.add_argument("--n-jobs", type=int, default=4)
     ap.add_argument("--verbose", action="store_true", help="print every hold that is not exact")
     args = ap.parse_args()

@@ -6,15 +6,26 @@ exists as a committed script rather than a remembered figure so the README's num
 re-derived after the next recording session.
 
 Protocol: hold out one of the author's sessions, train on the other three PLUS the strangers
-(strangers.py: the ASLNow records and the 218-signer digit photos that are letters -- other
-people's hands, never held out here because they are never the author's) with EXACTLY the
-shipped recipe (train_static.training_rows: jitter sigma 0.12 x4 on the training frames, no
-filter, static/v4, RF 80 trees / min leaf 5), test on every un-jittered frame of the held-out
-session. Jitter touches TRAINING folds only -- jittering the test fold would score copies of
-frames already being scored. --henry-only leaves the strangers out (0.867 / 0.778 with this
-recipe; the previous release's filtered 100-tree forest measured 0.861 / 0.763);
-crossval_strangers.py holds the strangers out instead and is where the cross-signer numbers
-come from.
+(strangers.py: the ASLNow records, the 218-signer digit photos that are letters, and ASL-HG's
+ten signers capped at 25 frames per signer-letter -- other people's hands, never held out
+here because they are never the author's) with EXACTLY the shipped recipe
+(train_static.training_rows: the author's three training sessions capped at
+train_static.AUTHOR_CAP frames per letter POOLED, jitter sigma 0.12 x4 on the training
+frames, no filter, static/v4, RF 60 trees / min leaf 5), test on every un-jittered frame of
+the held-out session.
+
+BOTH CAPS AND THE JITTER ARE TRAINING-SIDE ONLY. A test fold is scored whole, every frame of
+it, at every recipe -- otherwise the denominator would move with the recipe and two rows of
+the same table would not be comparable. Jittering a test fold would score copies of frames
+already being scored; capping one would quietly drop the letters the author recorded most.
+
+--henry-only leaves the strangers out (0.873 / 0.782 with this recipe at seed 0, and 0.872 /
+0.787 with --author-cap 0 as well; the previous release's filtered 100-tree forest measured
+0.861 / 0.763). --no-aslhg leaves only ASLNow and Ankara in (0.913 / 0.873), and with
+--author-cap 0 --trees 80 --leaf 5 beside it that is the previous release's recipe exactly and
+reproduces its pooled 0.9131 / cross-day 0.8726 / macro S1 0.8708 at seed 0. crossval_strangers.py holds the strangers
+out instead, and crossval_signers.py holds out one of ten real people; that is where the
+cross-signer numbers come from.
 
 Read the per-fold table, not just the mean. The four sessions do not cover the same letters: S1
 is the full 24-letter archive recorded months before the others, S2 is 23 letters, and S3 and S4
@@ -92,6 +103,30 @@ def sessions(legacy=False):
     return out
 
 
+def shipped_training_set(src=None, author_cap=None, aslhg_cap=None, strangers=True,
+                         aslhg=True):
+    """Exactly the per-class block the shipped forest is fitted on. -> (per_class, label)
+
+    train_static.py builds this from its own --extra list; everything that needs "the shipped
+    training set" without re-deriving it -- idle_gate.py --seeds, crossval_signers.py, a
+    candidate sweep -- comes here instead, so there is one definition of it and not four.
+    tests/test_strangers.py checks that this and train_static.py agree frame for frame.
+    """
+    src = sessions() if src is None else src
+    author_cap = T.AUTHOR_CAP if author_cap is None else author_cap
+    aslhg_cap = ST.ASLHG_CAP if aslhg_cap is None else aslhg_cap
+    per = ST.merge(*[src[s][0] for s in src])
+    label = f"author {sum(len(P) for P in per)}f"
+    if author_cap:
+        per = A.cap_per_letter(per, author_cap)
+        label += f" capped to {sum(len(P) for P in per)} at {author_cap}/letter"
+    if strangers:
+        got, sources = ST.load_strangers(cap=aslhg_cap or None, aslhg=aslhg)
+        per = ST.merge(per, got)
+        label += f" + {sum(len(P) for P in got)}f from {sources}"
+    return per, label
+
+
 def legacy_rows(per_class):
     """The previous release's training rows: static/v3, originals then each rotation as a
     block. Row order matters (it changes the forest's bootstrap draws), so this reproduces the
@@ -127,10 +162,14 @@ def bootstrap_ci(bursts, n_boot=2000, seed=0):
     return float(np.percentile(accs, 2.5)), float(np.percentile(accs, 97.5))
 
 
-def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True, strangers=None, ruleset=None):
+def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True, strangers=None, ruleset=None,
+        author_cap=None):
     """One leave-one-session-out pass. Returns a dict with per-fold accuracies, the pooled
     figure, the hold-level CI, S1 macro recall, and the out-of-fold arrays. `strangers` is a
-    per-class list added to every TRAINING fold (None = none); `ruleset` overrides the filter."""
+    per-class list added to every TRAINING fold (None = none); `ruleset` overrides the filter;
+    `author_cap` is train_static.AUTHOR_CAP applied to the three TRAINING sessions pooled
+    (None = no cap). Both caps are training-side only: the held-out session is scored whole,
+    every frame of it, so the number stays comparable across recipes."""
     src = sessions(legacy) if src is None else src
     ruleset = T.RULESET if ruleset is None else ruleset
     featfn = F.static_feature if legacy else T.FEATFN
@@ -150,6 +189,8 @@ def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True, strangers=None, 
             Xtr, ytr, dropped = legacy_rows(train)
             model = RandomForestClassifier(n_estimators=400, random_state=seed, n_jobs=n_jobs)
         else:
+            if author_cap:
+                train = A.cap_per_letter(train, author_cap)
             if strangers is not None:
                 train = ST.merge(train, strangers)
             Xtr, ytr, dropped = T.training_rows(train, ruleset=ruleset, seed=seed)
@@ -237,10 +278,24 @@ def main():
                     help="no strangers on the training side: the previous release's one-signer forest (0.861 / 0.763)")
     ap.add_argument("--ruleset", default=None, choices=sorted(A.RULESETS),
                     help="defining-geometry training filter (default: the shipped setting, none)")
+    ap.add_argument("--author-cap", type=int, default=None,
+                    help="frames per letter kept from the author's POOLED training sessions "
+                         "(default: train_static.AUTHOR_CAP; 0 disables the cap)")
+    ap.add_argument("--aslhg-cap", type=int, default=None,
+                    help="ASL-HG frames per (signer, letter) on the training side "
+                         "(default: strangers.ASLHG_CAP; 0 = all 23,984)")
+    ap.add_argument("--no-aslhg", action="store_true",
+                    help="leave ASL-HG out of the training side entirely (the previous release's data)")
+    ap.add_argument("--trees", type=int, default=None, help="forest n_estimators (candidate sweep)")
+    ap.add_argument("--leaf", type=int, default=None, help="forest min_samples_leaf (candidate sweep)")
     args = ap.parse_args()
 
     src = sessions(legacy=args.legacy)
     strangers = None
+    # The caps are training-side recipe, so --legacy (which reproduces a recipe that predates
+    # both of them) takes neither.
+    author_cap = None if args.legacy else (T.AUTHOR_CAP if args.author_cap is None else args.author_cap)
+    aslhg_cap = ST.ASLHG_CAP if args.aslhg_cap is None else args.aslhg_cap
     if args.legacy:
         print("LEGACY recipe: static/v3 + rotation (-12,-6,6,12) + RF400, no filter, per-frame "
               "handedness, author only -- the regression guard (expected pooled 0.759, S1 0.659), "
@@ -248,19 +303,22 @@ def main():
     else:
         ruleset = T.RULESET if args.ruleset is None else args.ruleset
         if not args.henry_only:
-            strangers, sources = ST.load_strangers()
+            strangers, sources = ST.load_strangers(cap=aslhg_cap or None, aslhg=not args.no_aslhg)
             n_str = sum(len(P) for P in strangers)
         print(f"recipe: {T.FEATURE_TAG} ({T.FEATURE_DIM}-D), filter {ruleset!r}, jitter sigma "
-              f"{T.JITTER_SIGMA} x{T.JITTER_COPIES} on training folds only, "
-              f"RF({T.FOREST['n_estimators']}, min_samples_leaf={T.FOREST['min_samples_leaf']}), "
+              f"{T.JITTER_SIGMA} x{T.JITTER_COPIES} on training folds only, author cap "
+              f"{author_cap or 'none'}/letter pooled, "
+              f"RF({args.trees or T.FOREST['n_estimators']}, "
+              f"min_samples_leaf={args.leaf or T.FOREST['min_samples_leaf']}), "
               + (f"strangers on the training side: {n_str} frames from {sources}" if strangers is not None
                  else "author's sessions only (--henry-only)") + "\n")
     runs = []
     for seed in range(args.seeds):
         if args.seeds > 1:
             print(f"--- seed {seed} ---")
-        res = run(seed=seed, legacy=args.legacy, src=src, n_jobs=args.n_jobs,
-                  strangers=strangers, ruleset=args.ruleset)
+        with T.forest_override(n_estimators=args.trees, min_samples_leaf=args.leaf):
+            res = run(seed=seed, legacy=args.legacy, src=src, n_jobs=args.n_jobs,
+                      strangers=strangers, ruleset=args.ruleset, author_cap=author_cap)
         report(res)
         runs.append(res)
         if seed == 0 and args.oof:

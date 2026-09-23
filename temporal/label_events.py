@@ -19,7 +19,10 @@ events is one the runtime would also have missed -- the gate never armed, or the
 crossed the trigger. That is worth knowing before training, not after.
 
     ../.venv/bin/python temporal/label_events.py
-    ../.venv/bin/python temporal/label_events.py --clips path/to/motion_clips.npz
+    ../.venv/bin/python temporal/label_events.py --clips other.npz --out other_events.npz
+
+--out is not optional on the second line, and this file refuses to run without it: see
+default_out_refusal().
 """
 import argparse
 import json
@@ -37,6 +40,42 @@ from thresholds import Thresholds, DEFAULT
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CLIPS = os.path.join(HERE, "motion_clips.npz")
 DEFAULT_OUT = os.path.join(HERE, "events.npz")
+
+
+def same_path(a, b):
+    """True when two paths name the same file, whatever spelling they arrived in."""
+    return os.path.realpath(os.path.abspath(str(a))) == os.path.realpath(os.path.abspath(str(b)))
+
+
+def default_out_refusal(in_path, out_path, default_in=None, default_out=None,
+                        in_flag="--clips", out_flag="--out", suffix="_events"):
+    """The refusal message for a run that would write the committed default over foreign input.
+
+    Returns None when the run is safe, and the text to print when it is not.
+
+    The hazard is one line of argparse: `--out` defaults to a committed artifact, so a command
+    that changes only the INPUT still writes the DEFAULT OUTPUT. `label_events.py --clips
+    third_party.npz` replaces temporal/events.npz -- the motion training set every later run
+    trains on -- with the events cut from somebody else's footage, prints the path it wrote as
+    if that were routine, and exits 0. This was not hypothetical: it happened here while
+    testing an ingest, and the committed file had to be restored from HEAD.
+
+    The rule is narrow on purpose. Default input with default output is the ordinary retrain
+    and stays allowed; an explicit `--out`, wherever it points, is a decision someone typed and
+    stays allowed. Only the mismatch -- foreign input, default output -- is refused, because
+    that is the one combination nobody means.
+    """
+    default_in = DEFAULT_CLIPS if default_in is None else default_in
+    default_out = DEFAULT_OUT if default_out is None else default_out
+    if same_path(in_path, default_in) or not same_path(out_path, default_out):
+        return None
+    suggested = os.path.splitext(str(in_path))[0] + suffix + os.path.splitext(str(default_out))[1]
+    return (f"refusing to write {default_out}\n"
+            f"{os.path.basename(default_out)} is the committed default, and {in_flag} points at "
+            f"{in_path} instead of\n{default_in}, so what this run would write is not what that "
+            f"file holds.\nPass {out_flag} explicitly, for instance:\n"
+            f"    {out_flag} {suggested}\n"
+            f"Nothing has been read or written.")
 
 #: Recorder label -> event class. NONE clips are negatives; whatever the segmenter cuts out of
 #: them is, by construction, motion that is not a letter.
@@ -216,13 +255,23 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--clips", default=DEFAULT_CLIPS)
-    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--out", default=DEFAULT_OUT,
+                    help=f"where the events go (default {DEFAULT_OUT}). REQUIRED whenever "
+                         "--clips is not the committed recording: the default is the committed "
+                         "training set and this refuses to overwrite it with foreign events")
     ap.add_argument("--thresholds", default=None, help="a Thresholds json from calibrate.py")
     ap.add_argument("--aspect", nargs=2, type=int, metavar=("W", "H"), default=None)
     ap.add_argument("--other", default="drop_unreachable", choices=OTHER_POLICIES,
                     help="what becomes of a prompted item's or a recorded clip's non-credited "
                          "spans")
     args = ap.parse_args()
+
+    # Before anything is read, and before the long MediaPipe-free but still slow replay: a run
+    # that would replace the committed events.npz with events cut from other footage stops here.
+    refusal = default_out_refusal(args.clips, args.out)
+    if refusal:
+        print(refusal)
+        return 2
 
     if not os.path.exists(args.clips):
         print(f"no recording at {args.clips}")

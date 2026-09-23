@@ -1,11 +1,18 @@
 # External data sources
 
-Why bother: the repository's README states that nothing in it supports a claim about a signer
-other than the one who recorded it. External footage is the only way to change that. For the
-letters it is a **test set**, not a training substitute — the training distribution should match
-your camera and the runtime's parked-then-move assumption. The one exception is the numbers
-mode, which is trained entirely on external data (section 5) and is labeled experimental for
-exactly that reason.
+Why bother: the README used to say that nothing in this repository supported a claim about a
+signer other than the one who recorded it. External footage is what changed that, and this file
+used to say it was for testing only. That is no longer true. For the **letters** these sets are
+not only a test set: the shipped forest trains on 8,561 frames of them (section 5's
+O/V/W/F, section 7, section 8) and is measured on them with each set held out in turn, plus one
+set (section 9) nothing may ever train on and one runtime replay on video (section 10). For the
+**motion** branch they are still a test set and a thin one; every J and Z event the forest is
+fitted on is the author's.
+
+Each section below says which side of the line its set is on, because that is the thing that
+goes stale. A set that crosses onto the training side turns its own "never seen" figure into an
+in-sample one, and every number taken from it before the crossing has to be relabeled
+historical. Section 9 exists to be the one set that can never do that.
 
 Everything ingested is tagged with a non-`S1` session, so the by-session split in
 `train_motion.py` and `evaluate.py` holds it out by construction rather than by remembering to.
@@ -20,9 +27,18 @@ plain JSON without a login, and it carries the license, the archive size and its
 curl -sL https://www.kaggle.com/datasets/<owner>/<slug>/croissant/download | python3 -m json.tool
 ```
 
-Every license and size below was read that way. Downloading still needs the one-time auth.
+Every license and size below was read that way. **Downloading does not need the auth either**,
+and the older claim here that it did was wrong. A plain
+`GET https://www.kaggle.com/api/v1/datasets/download/<owner>/<slug>` answers 302 with a signed
+`storage.googleapis.com` URL, and following the redirect returns the zip with no credentials:
+verified on `ayuraj/asl-dataset`, which came back as 59,642,568 B of valid zip
+(`ingest_ayuraj.py` does exactly this), and re-checked on 2026-09-23 with a ranged request, which
+answered 206 `application/zip`. `HEAD` on that same URL answers 404, so an existence check has to
+be a GET and a HEAD will tell you a dataset that is there is not. None of this is documented
+anywhere on Kaggle, which means it can close without notice; the auth section below is kept for
+the day it does.
 
-## One-time Kaggle auth
+## One-time Kaggle auth (a fallback now, not a requirement)
 
 1. <https://www.kaggle.com/settings/account> → **Create New API Token** → downloads `kaggle.json`
 2. `mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json`
@@ -45,7 +61,8 @@ files.
     --label J --signer kaggle_jz --session EXT
 ./.venv/bin/python temporal/ingest_external.py --videos ~/Downloads/asl_jz/Z \
     --label Z --signer kaggle_jz --session EXT
-./.venv/bin/python temporal/label_events.py --clips temporal/external_clips.npz
+./.venv/bin/python temporal/label_events.py --clips temporal/external_clips.npz \
+    --out temporal/external_events.npz
 ```
 
 Not yet ingested. Check two things when it lands, because they decide whether it is worth
@@ -115,8 +132,30 @@ yt-dlp -f 'bv*[height<=720]' -o '~/Downloads/yt/%(id)s.%(ext)s' <url>
 ```
 
 Trim to the J and Z portions first, or ingest whole and let `label_events.py` cut candidates. Use
-a distinct `--signer` per video. Check licensing before redistributing anything; for a local test
-set this is the cheapest route to signer diversity.
+a distinct `--signer` per video, and pass `--out`: `label_events.py --out` defaults to
+`temporal/events.npz`, the committed motion training set. Running the diagnostic bare on
+somebody else's clips used to replace it silently; it now refuses and names the flag, which is a
+backstop and not a substitute for typing the path you meant.
+
+**This route has been run.** Three CC BY channels (signer ids `yt_danielparks`,
+`yt_inclusivesigntalk`, `yt_lexiemoore`) and one ASL Signbank entry (`signbank_asl`, CC BY-NC-SA),
+one J and one Z from each, gave the motion branch its first and so far only cross-signer numbers:
+of the eight clips, four cut a span the runtime could score, three of those were J and all three
+emitted J, and the one scorable Z span read MOVE (J 0.404 / MOVE 0.423 / Z 0.173). The same
+signers' fingerspelling containing no J and no Z — 160.1 s of it — cut five spans and emitted
+nothing, so 0.00 false J/Z per minute. Four clips per letter: quote it as a direction, never as a
+percentage. Neither the video nor the landmarks are committed; the NC clip could not be, and the
+rest are not worth the bytes at this sample size.
+
+**Those numbers are the motion branch alone, and the end-to-end reading is not as clean.**
+"J 3 of 3, Z 0 of 4, no wrong letter" counts what the motion classifier did with the spans the
+segmenter cut. Replayed end to end through the real `Segmenter` on the shipped forest, the same
+eight clips also emit **eight static letters that were not the target** — the readings are `HJ`,
+`W`, `IJL`, `YX`, `IJ` and `Y`. Some of that is the documented correct read of a parked launch
+pose (the `I` before a J is the pose the hand is actually in, and the bullet on launch poses in
+`README.md` covers it), but `H`, `W`, `Y` and `X` are not: they are the static branch reading a
+stranger's hand mid-travel. Never publish the motion figure bare. On a stranger's clip the thing
+a viewer sees is the transcript, and the transcript has extra letters in it.
 
 ## 5. Sign Language Digits Dataset — ingested; it is the numbers mode
 
@@ -232,37 +271,213 @@ What `ingest_aslnow.py` does with the two missing fields, so the decisions can b
   nearest same-letter neighbor sits at a median 0.31 palm units in shape space, against 0.07
   inside one of the author's own held bursts, so every record is a separate capture.
 
-How it is used (`strangers.py`, `crossval_strangers.py`): held out entirely as the cross-signer
-test set — a forest trained on the author's sessions and the digit photos, which never saw it,
-reads 0.790 of its 1,874 letter records — and as training data for the shipped forest, which
-lifts the author's own cross-day fold from 0.778 to 0.873 and the 218-signer V from 0.17 to 0.83.
-With it in training, its five-fold number (0.946) is an upper bound, since a participant may sit
-on both sides of a fold.
+How it is used (`strangers.py`, `crossval_strangers.py`): **held out entirely** as one of the two
+cross-signer test sets — a forest trained on the author's sessions, the digit photos and ASL-HG,
+which never saw ASLNow, reads **0.8292 ± 0.0061 over three seeds** of its 1,874 letter records
+(0.836 at seed 0), and through the shipped vote gate it emits on 0.75 of them and is right on
+0.907 of those — and **as training data** for the shipped forest. Together with the Ankara photos
+it lifts the author's own cross-day fold from 0.782 to 0.873, and the 218-signer V goes from 0.19
+with the author's sessions alone in training to 0.88 once this set and ASL-HG are added. With it
+in training, its own five-fold number (0.936 at seed 0) is an upper bound, since a participant
+may sit on both sides of a fold. The previous release's figures on this set were
+0.790 held out and 0.946 five-fold, on a forest and a training set that no longer exist; they are
+not comparable to the pair above.
 
 The **Sign Language Digits Dataset** (section 5) is the other stranger set for the letters: its
 0, 2, 6 and 9 are O, V, W and F exactly, so 687 of its photographs are letter frames from 218
-more hands. `strangers.load_ankara_letters` maps them.
+more hands. `strangers.load_ankara_letters` maps them, and held out in turn they read 0.9413 ±
+0.0048 over three seeds.
 
-## Still-image letter sets: the next honest test for the letters
+## 8. ASL-HG — ten named signers; ingested, and the first by-signer split
 
-Two more public sets cover the 24 static letters with more than one signer, and this file used to
-dismiss them for lacking J and Z. That was the wrong reason. ASLNow (above) gave the letters
-their first cross-signer number, but it is one frame per record with no participant id; a set
-with known signers, or with video, would give a by-signer split and a held-sign replay on
-strangers, which nothing here has. They are not useful for the motion branch, but they are the
-next test worth running for the letters, through the same `ingest_images.py` path the digits
-used — with a signer rule written for their file layout, since `runs` encodes the Ankara set's
-numbering.
+<https://data.mendeley.com/datasets/j4y5w2c8w9/1>, DOI `10.17632/j4y5w2c8w9.1`, **CC BY 4.0**
+(the record's `data_licence` reads "You can share, copy and modify this dataset so long as you
+give appropriate credit, provide a link to the CC BY license, and indicate if changes were made,
+but you may not do so in a way that suggests the rights holder has endorsed you or your use of
+the dataset. Note that further permission may be required for any content within the dataset that
+is identified as belonging to a third party." — the record identifies no such content).
 
-- **ASL Fingerspelling A / B** (Pugeault and Bowden, "Spelling It Out"): A is 131k images of
-  24 letters from 5 signers, B is 9 signers. Still images, so each is its own hold. A Kaggle
-  mirror, `mrgeislinger/asl-rgb-depth-fingerspelling-spelling-it-out`, is 2.1 GB and states no
-  license in its Croissant record, so read the original's terms first.
-- **ASL-HG** (<https://data.mendeley.com/datasets/j4y5w2c8w9/1>, CC BY 4.0): 36,000 smartphone
-  photos across 36 classes — A-Z and 0-9 — from 10 volunteers, 100 per class per person, indoor
-  and outdoor. Its 0 is the two-handed sign, which this project cannot read, and its J and Z are
-  single stills, which are mislabeled I and D for this project's purposes; the other 34 classes
-  are usable, and the ten signers are known, so a by-signer split is possible.
+36,000 smartphone photographs across 36 classes (A-Z and 0-9) from 10 volunteers in Mirpur,
+Dhaka, taken May-June 2025, 100 per class per person, indoors and out. This project reads the 24
+static-letter folders only: 24,000 images, **23,984 with a hand (99.93%)**, the cleanest external
+set here (Ankara is 87.5%, ayuraj 72.3%). The 16 misses are all one signer's H. Its 0 is the
+two-handed ASL zero, so the digit-to-letter mapping the Ankara set uses does not apply, and its J
+and Z are single stills, which a static classifier reads as I and D.
+
+```
+./.venv/bin/python temporal/ingest_aslhg.py        # 877 MB of zip -> temporal/aslhg.npz (5.6 MB)
+```
+
+What `ingest_aslhg.py` infers, so the decisions can be revisited (its docstring carries the
+measurements):
+
+- **classes.** Only the 24 static letters are read. J and Z are single stills here, and a still
+  of a J is an I. The digit folders belong to `train_digits.py`, and this set's 0 is the
+  two-handed ASL zero, so the digit-to-letter mapping `strangers.DIGIT_LETTERS` uses for the
+  Ankara photos does not apply to it.
+- **signer.** The file name is `<CLASS>/P<k>_<CLASS>_<n>.jpg`, so the signer is the prefix
+  before the first underscore: P1 to P10, 2,400 frames each, P8 2,384. That rule is the whole
+  reason for a second ingester rather than another `--signer-rule` on `ingest_images.py`.
+- **frame size.** Every image is stored 300x300, so `u = x * (W/H)` is the identity. That is a
+  statement about what MediaPipe normalized by, not a guess that the phone shot square, and the
+  palm triangle confirms it: over the upright palm-forward letters the palm's width-to-height
+  ratio is 0.755 on the author's frames, and ASL-HG reads 0.719 at 1:1 against 0.913 at 4:3,
+  1.165 at 16:9, 0.561 at 3:4 and 0.441 at 9:16 (n = 7,000, the method `ingest_aslnow.py` uses).
+- **handedness.** MediaPipe labels 23,974 images 'Left' and 10 'Right', the same unmirrored
+  convention as the Ankara photos, so `strangers.load_aslhg` canonicalizes per image by that
+  label rather than inferring chirality the way the ASLNow loader has to.
+
+It is the first source here with **real signer ids**, and that is what makes a by-signer split
+possible at all. It ships on both sides:
+
+- **training**, capped at 25 frames per (signer, letter) = 6,000 (`strangers.ASLHG_CAP`). Uncapped
+  it is worse, not better: 24,000 frames from ten hands outvote the author's own 3,807, and his
+  pooled leave-one-session-out falls from 0.9256 to 0.909-0.915.
+- **testing**, as `temporal/crossval_signers.py`: hold out all 2,400 of one signer's frames, train
+  on the other nine at the shipped cap. Pooled 0.9453 over all 23,984 held-out frames at seed 0,
+  per signer 0.8796 to 1.0000. U (0.671, read as R) and R (0.703, read as U) are the only letters
+  under 0.80, and they stay there with nine other signers in training — a feature defect, not a
+  data shortage.
+
+Only landmarks are committed, never a photograph, the same as the Ankara digits.
+
+## 9. Kaggle `ayuraj/asl-dataset` — the permanent never-train holdout
+
+<https://www.kaggle.com/datasets/ayuraj/asl-dataset>, **CC0** (the Croissant record states it
+verbatim as `{"@type": "sc:CreativeWork", "name": "CC0: Public Domain", "url":
+"https://creativecommons.org/publicdomain/zero/1.0/"}`). 2,515 pre-cropped 400x400 hand
+photographs over 36 folders, five signers named by the filename prefix (`hand1`..`hand5`). The zip
+carries every image twice, byte for byte identical, once at `asl_dataset/<class>/` and once one
+level deeper; the ingester descends exactly one level.
+
+```
+./.venv/bin/python temporal/ingest_ayuraj.py       # 57 MB of zip -> temporal/ayuraj.npz (0.4 MB)
+```
+
+**Nothing may ever train on it.** `strangers.NEVER_TRAIN` holds the path, `strangers.training_source`
+raises on it, and `tests/test_strangers.py` builds the real training set and asserts that not one
+of its 1,111 letter frames is in it. The reason is a rule about measurement rather than about this
+dataset: every other stranger set here has crossed onto the training side once it proved useful,
+and each crossing turned a "never seen" figure into an in-sample one that had to be relabeled
+historical. A set that is never trained on is the only one whose number cannot drift that way.
+
+What it reads, on the two pickles I scored it against (`crossval_strangers.ayuraj_report()`,
+the committed `temporal/model_static.p` and the previous release's, same 1,111 frames both
+times): **0.889 now, 0.797 before**. Per signer on the committed forest: hand1 0.876 (n = 364),
+hand2 0.918 (441), hand3 0.867 (83), hand4 0.922 (77), hand5 0.829 (146). Through the shipped
+vote gate it emits on 0.88 of records and is right on 0.961 of those, against 0.69 and 0.904
+before. That is the whole point of a never-train set: the two numbers are the same measurement,
+so the difference between them is the retrain and nothing else.
+
+Two caveats travel with any number taken from it: MediaPipe finds a hand in only 72.33% of the
+images (1,819 of 2,515 over all 36 folders), and the misses concentrate on the fists (T 8 of 65,
+S 14 of 70, M 15 of 70), so its per-letter cells for those letters have single-digit n and the
+pooled figure is scored on a detection-biased subset. Quote it pooled, never per letter.
+
+## 10. OpenHands fingerspelling clips — a stranger holding a letter through the segmenter
+
+<https://doi.org/10.5281/zenodo.6813108>, "OpenHands: Fingerspelling datasets - Poses",
+**CC BY 4.0**, no account needed. The American set is one 63,060,346 B `American.zip` holding
+562 clips over 36 classes (a-z plus the digit words), with `videos/train` and `videos/test`
+subdirectories and a `glosses.csv`. 266 of the clips are the 24 static letters, and those 266
+are what this project reads.
+
+```
+# unzip American.zip somewhere outside the repository, then:
+./.venv/bin/python temporal/replay_strangers.py --root <American>/videos \
+    --out temporal/openhands_replay.json
+```
+
+This is the source that answers a question earlier releases of the README admitted they could
+not: **nothing here measured a stranger holding a letter through the segmenter.** A frame score
+is not a runtime score. `replay_strangers.py` runs each clip through one fresh
+`Segmenter` and one fresh MediaPipe Hands, with the shipped pickles and the shipped thresholds,
+so the run sees a hand appear, settle, hold still for `VOTE_MIN` frames and win a vote at the
+letter's own floor, exactly as the page would. The result is committed as
+`temporal/openhands_replay.json` (266 rows, 79,869 B); **no video and no landmark is
+committed**, only the per-clip verdict. Two full runs wrote that file byte for byte identically.
+
+It carries **no signer ids**. The only structure in the file names is a per-letter index, and
+whether index 3 of one letter and index 3 of another are the same person is recorded nowhere in
+the download, so the clips cannot be grouped and no leave-one-signer-out split can be built from
+them. The by-signer number lives in section 8, not here. `temporal/ingest_external.py` also read
+15 of the J and Z clips from the same download while it was being exercised; they are not
+committed either.
+
+## 11. Pugeault and Bowden, ASL Fingerspelling A — LOCAL ONLY, not committed, never trained on
+
+Pugeault, N. and Bowden, R., *Spelling It Out: Real-Time ASL Fingerspelling Recognition*, ICCV
+Workshops 2011; dataset page <https://www.cvssp.org/FingerSpellingKinect2011/>. Kinect color
+and depth crops of the 24 static letters, five top-level directories A-E.
+
+**Its landmarks are not committed and must not be, because the source states no license.** The
+dataset page carries no license, copyright, terms or permission statement of any kind — the
+scouting run that fetched it found zero occurrences of any of those words on the page, and on
+2026-09-23 the URL answers 200 with an empty body, so there is nothing to read now either. No
+license means no redistribution right, and a derived landmark file is a redistribution. It gets
+a local corroboration run and no row in any results table.
+
+Two more reasons it stays out.
+
+**It must not be trained on.** With its frames in the training set the idle gate breaks outright:
+3 of the 43 clean idle holds emit, 21 of 2,064 votes, every one of them a G, at a mean winner
+probability of 0.975 with the set capped at 100 per (signer, letter) and 1.000 uncapped — against
+0 of 43 for the recipe that ships. A relaxed hand read as a confident G is the exact failure the
+vote floor exists to prevent, and no accuracy buys that back.
+
+**Its "by signer" may be "by session".** The dataset page describes five users, the published
+paper is commonly cited as four persons, and the download settles nothing on its own: five
+directories is five directories. I could not re-read the page to check — on 2026-09-23 it
+answered 200 with an empty body — so treat the signer count as unverified and check it before
+anyone builds a by-signer split on this set. Section 8 is where the by-signer number lives, and
+it has file-level signer ids.
+
+The regeneration recipe, so the corroboration can be repeated without the file:
+
+1. Download the set from the page above and unpack it outside the repository.
+2. Run MediaPipe over the color crops exactly as `temporal/ingest_images.py` runs it —
+   `mp.solutions.hands`, `static_image_mode=True`, `max_num_hands=1`,
+   `min_detection_confidence=0.3`, BGR read by OpenCV and converted to RGB, never flipped — with
+   one addition the tight Kinect crops force: pad the image by 0.5 of its size before detection
+   (the palm detector wants context and these crops have none), then map the landmarks **back**
+   into the unpadded crop's own normalized frame before storing them, because
+   `features.to_isotropic` multiplies x by W/H and padding to a square would silently change the
+   aspect the loader then corrects for.
+3. Store `frame_size` **per image**: the crops are variable-size hand bounding boxes, so there is
+   no single (W, H) for the set. Correcting per image reads 0.8077; collapsing to the first
+   image's size, which is what the shipped `(N,2)`-unaware loaders would do, reads 0.7997, and no
+   correction at all reads 0.7861.
+4. Decide chirality the way `ingest_aslnow.py` does, with a forest trained on the author's own
+   frames and their mirror images, and keep MediaPipe's own label beside it. On this set 0.0104
+   of frames are mirrored onto the canonical frame and the detector is confident on 0.9720.
+
+What it corroborates, scored on the committed `temporal/model_static.p`, which never saw it:
+**0.8077 over 65,431 detected letter frames** (52,851 right), per directory A 0.8052, B 0.8296,
+C 0.8432, D 0.8117, E 0.7457; through the shipped vote gate it emits on 0.7956 of frames and is
+right on 0.8874 of those. It is the largest cross-signer read in the project and it agrees with
+the two committed ones (ASL-HG by signer 0.9453 at seed 0, ayuraj 0.889) on direction, not on
+level. Tight Kinect crops with no context around the hand are a harder condition than either of
+those sets, which is what a corroboration is for.
+
+## What the letters still have no source for
+
+This file used to end with a list of still-image sets to try next, because nothing here could
+split by signer or replay a stranger's held sign. Both of those are now done: section 8 is the
+by-signer split (`temporal/crossval_signers.py`), section 10 is the runtime replay on other
+people's video, and section 9 is a holdout that can never quietly become training data. What is
+left undone is narrower, and it is all on the motion branch.
+
+- **J and Z on other people's video, at any scale.** Eight clips from four sources is what
+  exists (section 4's route: three YouTube channels under CC BY, signer ids `yt_danielparks`,
+  `yt_inclusivesigntalk` and `yt_lexiemoore`, plus one ASL Signbank entry under CC BY-NC-SA,
+  `signbank_asl`; one J and one Z each). Neither the video nor its landmarks is committed, and
+  the NC clip could not be even if it were worth committing. Section 1's CC0 J/Z video set is
+  still the one worth downloading.
+- **A by-signer motion split.** Every motion event in `events.npz` is the author's.
+
+A Kaggle mirror of the Pugeault set,
+`mrgeislinger/asl-rgb-depth-fingerspelling-spelling-it-out`, is 2.1 GB and states no license in
+its Croissant record either, so it inherits section 11's problem rather than solving it.
 
 Sign Language MNIST is still not useful: 28x28 crops carry no landmarks to extract. Kaggle's
 29-class ASL Alphabet sets include J and Z as single still images, which is worse than omitting
@@ -272,9 +487,16 @@ handshapes; the geometry does not transfer.
 ## Always run this before trusting a download
 
 ```
-./.venv/bin/python temporal/label_events.py --clips temporal/external_clips.npz
+./.venv/bin/python temporal/label_events.py --clips temporal/external_clips.npz \
+    --out temporal/external_events.npz
 ```
 
 If J and Z clips cut zero events, the footage begins mid-gesture and never arms a gate — the
 runtime would miss it too. Ingesting ten clips and reading that diagnostic costs a minute and
 tells you whether the remaining gigabytes are worth downloading.
+
+`--out` is on that command because `label_events.py --out` defaults to `temporal/events.npz`,
+the committed motion training set. Running the diagnostic bare on somebody else's footage used
+to replace it and print the path as though that were routine; it now refuses and names the flag
+(`label_events.default_out_refusal`, checked by `tests/test_label_events.py`). Type the `--out`
+anyway — the refusal is a backstop, not a reason to stop thinking about where the file goes.

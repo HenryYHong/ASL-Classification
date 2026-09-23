@@ -16,11 +16,21 @@ near-miss item):
 
 The per-clip cases slice real items out of the committed motion_clips.npz so the spans come
 from the real Segmenter over real footage; they skip if the recording is not present.
+
+The last group is about the file the script writes rather than the labels in it. `--out`
+defaults to the committed temporal/events.npz, so `label_events.py --clips <anything>` used to
+replace the motion training set with events cut from that anything, print the path as if that
+were routine and exit 0. It happened here, and the file had to be restored from HEAD. The
+refusal is checked end to end -- a real subprocess, and the committed file's bytes compared
+before and after -- because the defect was never in the labeling and a unit test of the rule
+would not have seen it.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -243,6 +253,74 @@ def test_clip_as_item_covers_the_whole_clip():
     assert item["rest"][0] > stamps[-1], "a span starting anywhere in the clip is in-item"
     assert LE.clip_as_item("NONE", stamps)[0]["label"] == "NONE"
     assert LE.clip_as_item("MOVE", stamps)[0]["label"] == "NONE"
+
+
+# ---------------------------------------------------------------- the committed default output
+
+def _digest(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def test_label_events_refuses_to_write_the_committed_events_over_foreign_clips():
+    """The real command, in a real subprocess, with the real committed file on disk.
+
+    A sliced copy of the recording under a different name is exactly the shape of input that
+    caused this: legitimate footage, a legitimate diagnostic run, and --out left at its
+    default. The run must refuse, name the flag, exit non-zero, and leave events.npz byte for
+    byte as it was.
+    """
+    events = os.path.join(ROOT, "events.npz")
+    if not os.path.exists(events):
+        raise Skip("temporal/events.npz is not present")
+    before = _digest(events)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "perclip.npz")
+        _per_clip_recording(path, with_gap=False)
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "label_events.py"),
+                            "--clips", path], capture_output=True, text=True)
+    assert p.returncode != 0, f"exited 0:\n{p.stdout}{p.stderr}"
+    said = p.stdout + p.stderr
+    assert "--out" in said, said
+    assert "refusing to write" in said, said
+    assert events in said, said
+    assert _digest(events) == before, "events.npz was written by a run that claimed to refuse"
+
+
+def test_train_motion_refuses_to_write_the_shipped_pickle_from_foreign_clips():
+    """The same hazard one file over: --data moved, --out left at the committed pickle."""
+    model = os.path.join(ROOT, "model_motion.p")
+    if not os.path.exists(model):
+        raise Skip("temporal/model_motion.p is not present")
+    before = _digest(model)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "perclip.npz")
+        _per_clip_recording(path, with_gap=False)
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "train_motion.py"),
+                            "--data", path], capture_output=True, text=True)
+    assert p.returncode != 0, f"exited 0:\n{p.stdout}{p.stderr}"
+    said = p.stdout + p.stderr
+    assert "--out" in said and "refusing to write" in said, said
+    assert _digest(model) == before, "model_motion.p was written by a run that claimed to refuse"
+
+
+def test_the_refusal_is_narrow_enough_to_leave_every_ordinary_run_alone():
+    """Positive control on the rule itself: refuse the mismatch and nothing else.
+
+    A guard that refused the ordinary retrain, or an explicit --out, would pass the two tests
+    above while making the script useless, and nothing else here would notice.
+    """
+    other = os.path.join("/nowhere", "other.npz")
+    assert LE.default_out_refusal(LE.DEFAULT_CLIPS, LE.DEFAULT_OUT) is None, "the retrain"
+    assert LE.default_out_refusal(other, "/tmp/somewhere_else.npz") is None, "an explicit --out"
+    assert LE.default_out_refusal(other, LE.DEFAULT_CLIPS) is None, "not the default output"
+    # the default input spelled any other way is still the default input
+    rel = os.path.relpath(LE.DEFAULT_CLIPS, os.getcwd())
+    assert LE.default_out_refusal(rel, LE.DEFAULT_OUT) is None, rel
+    said = LE.default_out_refusal(other, LE.DEFAULT_OUT)
+    assert said and "--out" in said and other in said, said
+    # and it carries a usable path rather than only a complaint
+    assert "/nowhere/other_events.npz" in said, said
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

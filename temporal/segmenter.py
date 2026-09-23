@@ -99,7 +99,7 @@ class _Frame:
     t: float
     P: np.ndarray         # (21,2) isotropic, handedness-canonicalized
     S: float
-    m: np.ndarray         # palm centre
+    m: np.ndarray         # palm center
     shape: np.ndarray     # 42-D, palm-normalized: drives sigma / stability / rigidity
     j_gate: bool
     z_gate: bool
@@ -489,8 +489,11 @@ class Segmenter:
             return "agree"
         if margin < th.VOTE_MARGIN:
             return "margin"
-        confident = meanp >= th.VOTE_PROB
-        decisive = margin >= th.VOTE_MARGIN_CLEAR and meanp >= th.VOTE_PROB_FLOOR
+        # Both routes read the letter's own floor (thresholds.VOTE_PROB_LETTER): a relaxed
+        # hand is read as a loose G and as nothing else above 0.51, so G stands at 0.75 while
+        # the rest of the alphabet sits at 0.55 instead of paying G's bill.
+        confident = meanp >= th.vote_prob_for(letter)
+        decisive = margin >= th.VOTE_MARGIN_CLEAR and meanp >= th.vote_floor_for(letter)
         if not (confident or decisive):
             return "undecided"
         if t < self._cooldown_until:

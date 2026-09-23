@@ -388,7 +388,7 @@ def augment(clip, rng):
 
     times = (times - times[0]) * rng.uniform(0.75, 1.25)   # tempo
 
-    # Amplitude scales the palm-centre TRAJECTORY, not the landmarks. Scaling the landmarks
+    # Amplitude scales the palm-center TRAJECTORY, not the landmarks. Scaling the landmarks
     # about a global centroid would scale the palm as well, and every feature here is in palm
     # units, so it would change nothing at all.
     a = rng.uniform(0.8, 1.2)
@@ -602,7 +602,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=DATA)
-    ap.add_argument("--out", default=OUT)
+    ap.add_argument("--out", default=OUT,
+                    help=f"where the pickle goes (default {OUT}). REQUIRED whenever --data is "
+                         "not the committed recording: the default is the shipped motion "
+                         "forest and this refuses to overwrite it from foreign clips")
     ap.add_argument("--aspect", default=None,
                     help="WxH the clips were recorded at, for recordings that do not carry it. "
                          "Only the ratio is used and it is load-bearing (16:9 vs 4:3 skews "
@@ -632,6 +635,19 @@ def main():
                          "session in the recording). The pickle records which, so evaluate.py "
                          "can label a session held-out or in-sample instead of guessing.")
     args = ap.parse_args()
+
+    # The same one-line argparse hazard label_events.py carries, with a pickle on the end of it
+    # instead of an npz: --out defaults to the committed model_motion.p, so a command that
+    # changes only --data still writes the shipped forest. One definition of the rule, in
+    # label_events.default_out_refusal, so the two cannot drift apart.
+    from label_events import default_out_refusal
+    refusal = default_out_refusal(args.data, args.out, DATA, OUT, "--data", "--out",
+                                  suffix="_motion")
+    # SystemExit rather than `return`: main() is called bare at the bottom of this file, so a
+    # returned code would be discarded and a refusal would exit 0.
+    if refusal:
+        print(refusal)
+        raise SystemExit(2)
 
     if not os.path.exists(args.data):
         print(f"no recording at {args.data}")
