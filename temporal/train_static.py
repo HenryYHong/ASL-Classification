@@ -381,6 +381,11 @@ def main():
                     help="defining-geometry training filter; the shipped forest uses none")
     ap.add_argument("--author-cap", type=int, default=AUTHOR_CAP,
                     help="frames per letter kept from the author's POOLED sessions (0 = no cap)")
+    ap.add_argument("--no-aslhg", action="store_true",
+                    help="keep the other stranger sets but drop ASL-HG from training. This is "
+                         "row B of the decomposition in the README: it is what isolates the "
+                         "recipe from the dataset, and it is the run that shows the recipe "
+                         "bought nothing on the never-train holdout")
     ap.add_argument("--aslhg-cap", type=int, default=ST.ASLHG_CAP,
                     help="ASL-HG frames per (signer, letter) on the training side (0 = all)")
     ap.add_argument("--trees", type=int, default=None, help="forest n_estimators (default: the shipped one)")
@@ -406,7 +411,8 @@ def main():
     tr, te = contiguous_split(per_class)
     stranger_sources, n_strangers = [], 0
     if not args.no_strangers:
-        strangers, stranger_sources = ST.load_strangers(cap=args.aslhg_cap or None)
+        strangers, stranger_sources = ST.load_strangers(
+            aslhg=not args.no_aslhg, cap=args.aslhg_cap or None)
         n_strangers = sum(len(P) for P in strangers)
         print(f"strangers: {n_strangers} frames from {stranger_sources} -- "
               + ", ".join(f"{LETTERS[c]}={len(P)}" for c, P in enumerate(strangers) if len(P)))
