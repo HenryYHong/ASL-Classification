@@ -201,9 +201,60 @@ def ayuraj_report(model_path=None, th=DEFAULT):
     print("     per signer: " + "  ".join(
         f"{s} {(pred[S == s] == y[S == s]).mean():.3f} (n={int((S == s).sum())})" for s in sorted(set(S))))
     print(f"     single-frame vote gate at DEFAULT: emits on {e:.2f} of records, right on {r:.3f} of those")
+    lo, hi = signer_ci(pred == y, S)
+    print(f"     signer-clustered 95% CI [{lo:.3f}, {hi:.3f}] -- resampling the 5 SIGNERS, not the "
+          f"frames, because 1,111 frames from 5 people are not 1,111 independent draws")
     print("     CAVEAT: these are crops around a hand and MediaPipe finds one in 72.33% of them, "
           "with the misses on the fists (T 8/65, S 14/70, M 15/70), so do not quote it per letter")
     return float((pred == y).mean())
+
+
+def signer_ci(correct, signers, n_boot=10000, seed=0):
+    """Percentile 95% CI over signers resampled with replacement.
+
+    The frame-level interval on 1,111 frames is about +-0.019 and it is fiction: the frames come
+    from five people, so the unit that varies between one holdout set and the next is the SIGNER.
+    Resampling signers gives an interval roughly three times wider, and that is the one to quote.
+    """
+    sig = sorted(set(signers))
+    idx = [np.flatnonzero(signers == s) for s in sig]
+    rng = np.random.default_rng(seed)
+    draws = [correct[np.concatenate([idx[i] for i in rng.choice(len(sig), len(sig), replace=True)])].mean()
+             for _ in range(n_boot)]
+    return tuple(float(v) for v in np.percentile(draws, [2.5, 97.5]))
+
+
+def ayuraj_delta(prev_path, model_path=None):
+    """The same 1,111 frames through two pickles, with a signer-clustered CI on the DIFFERENCE.
+
+    This is the only clean before-and-after in the repository. Every other set crossed onto the
+    training side at some point, so its "held out" figure stopped being comparable across
+    releases the moment it did. ayuraj never can (strangers.NEVER_TRAIN), so the two numbers are
+    one measurement repeated, and the paired difference is tighter than either interval alone.
+    """
+    import pickle
+    import features as F
+    here = os.path.dirname(os.path.abspath(__file__))
+    now_path = os.path.join(here, "model_static.p") if model_path is None else model_path
+    _, P, L, S = ST.load_ayuraj()
+    y = np.array([LETTERS.index(x) for x in L])
+    hits = {}
+    for tag, path in (("prev", prev_path), ("now", now_path)):
+        with open(path, "rb") as fh:
+            blob = pickle.load(fh)
+        featfn, _ = F.static_feature_for(blob["feature"])
+        hits[tag] = proba(blob["model"], featfn(P)).argmax(1) == y
+    d = hits["now"].astype(int) - hits["prev"].astype(int)
+    lo, hi = signer_ci(d, S)
+    print(f"  ayuraj, the same {len(P)} frames through both pickles:")
+    for tag in ("prev", "now"):
+        a, b = signer_ci(hits[tag], S)
+        print(f"     {tag:4s} {hits[tag].mean():.4f}  signer-clustered 95% CI [{a:.3f}, {b:.3f}]")
+    print(f"     difference {d.mean():+.4f}  signer-clustered 95% CI [{lo:+.3f}, {hi:+.3f}]"
+          f"  ({int((d > 0).sum())} frames flipped right, {int((d < 0).sum())} flipped wrong)")
+    print("     per signer: " + "  ".join(
+        f"{s} {hits['now'][S == s].mean() - hits['prev'][S == s].mean():+.3f}" for s in sorted(set(S))))
+    return float(d.mean()), (lo, hi)
 
 
 def main():
@@ -211,6 +262,10 @@ def main():
     ap.add_argument("--seeds", type=int, default=1)
     ap.add_argument("--n-jobs", type=int, default=4)
     ap.add_argument("--skip-henry-only", action="store_true", help="omit the author-only comparison rows")
+    ap.add_argument("--compare-prev", metavar="PICKLE",
+                    help="score ayuraj through this pickle as well as the committed one and print "
+                         "the paired difference with a signer-clustered CI. Get a previous "
+                         "release's forest with: git show <rev>:temporal/model_static.p > prev.p")
     ap.add_argument("--skip-ayuraj", action="store_true",
                     help="omit the permanent-holdout row (it scores the committed pickle, not a re-fit)")
     ap.add_argument("--author-cap", type=int, default=None,
@@ -233,6 +288,8 @@ def main():
                             aslhg_cap=args.aslhg_cap))
             if seed == 0 and not args.skip_ayuraj:
                 ayuraj_report()
+                if args.compare_prev:
+                    ayuraj_delta(args.compare_prev)
             print()
         if not args.skip_henry_only:
             print("for comparison, the previous release's training set (the author only):")
