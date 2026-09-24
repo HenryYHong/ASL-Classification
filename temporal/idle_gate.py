@@ -188,6 +188,17 @@ def gate(model, featfn, classes, th=DEFAULT, holds=None, votes=DEFAULT.VOTE_MIN)
     return eh, len(holds), ev, nv, maxp, letters
 
 
+#: The fewest seeds a --seeds run may claim a PASS on. Three was the previous bar, set after the
+#: release before this one passed at seed 0 and emitted at seed 2 -- and three turned out to be
+#: the same mistake one level up. Measured on the SHIPPED recipe over eight seeds: it emits on a
+#: clean idle hold at seeds 3, 4, 5 and 7, and the idle G maximum runs 0.6816 to 0.7940 against
+#: its 0.75 floor, so which three seeds you pick decides whether the gate says PASS. The seed is
+#: the jitter draw and the forest's bootstrap; nothing about it is meaningful, which is exactly
+#: why a result that moves with it is not a result. Eight is not a proof either, it is the
+#: cheapest number that exposed this one -- raise it rather than lower it.
+MIN_SEEDS = 8
+
+
 def gate_recipe(seeds, trees=None, leaf=None, author_cap=None, aslhg_cap=None, strangers=True,
                 aslhg=True, n_jobs=4, th=DEFAULT):
     """Train the shipped recipe at seeds 0..N-1 and gate each fit. -> [(seed, gate tuple, nodes)]
@@ -219,9 +230,14 @@ def gate_recipe(seeds, trees=None, leaf=None, author_cap=None, aslhg_cap=None, s
                   + (f", letters {letters}" if letters else ""), flush=True)
     bad = [s for s, g, _ in out if g[0]]
     tight = min(tights, key=lambda kv: kv[1]) if tights else (None, float("inf"))
-    print(f"over {seeds} seeds: {'PASS' if not bad else 'FAIL at seed(s) ' + str(bad)}"
+    verdict = "FAIL at seed(s) " + str(bad) if bad else ("PASS" if seeds >= MIN_SEEDS else
+              f"no verdict -- {seeds} seeds is under MIN_SEEDS ({MIN_SEEDS}); clean so far, "
+              f"which is what the shipped recipe also looked like at three")
+    print(f"over {seeds} seeds: {verdict}"
           f" -- tightest letter across all seeds {tight[0]} with {tight[1]:+.4f} of headroom "
           f"under its floor {th.vote_prob_for(tight[0]):.2f}")
+    if not bad and seeds < MIN_SEEDS:
+        print(f"  a PASS needs at least {MIN_SEEDS} seeds: re-run with --seeds {MIN_SEEDS}")
     return out
 
 
@@ -230,8 +246,12 @@ def main():
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--extract", action="store_true", help="rebuild idle_holds.npz from docs/browser_log.jsonl")
     ap.add_argument("--sweep", action="store_true", help="holds emitting at floors 0.50 .. 0.85")
-    ap.add_argument("--seeds", type=int, default=0,
-                    help="train the recipe at seeds 0..N-1 and gate each, instead of gating --model")
+    ap.add_argument("--seeds", type=int, default=0, metavar="N",
+                    help="train the recipe at seeds 0..N-1 and gate each, instead of gating "
+                         "--model. USE AT LEAST 8. Three is not enough: the shipped recipe "
+                         "passes at 0, 1, 2 and emits at 3, 4, 5 and 7, so a three-seed run "
+                         "reports PASS on a recipe that fails half the draws it was not asked "
+                         "about. See MIN_SEEDS.")
     ap.add_argument("--trees", type=int, default=None, help="--seeds: forest n_estimators")
     ap.add_argument("--leaf", type=int, default=None, help="--seeds: forest min_samples_leaf")
     ap.add_argument("--author-cap", type=int, default=None,
