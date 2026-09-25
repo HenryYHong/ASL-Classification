@@ -87,7 +87,7 @@ self-check's refusals, index.html's own consistency node test_words.mjs         
 and that models.json carries its three constants
 ```
 
-All five pass, and so do the 93 checks in `temporal/tests/`. Exactly one check skips on a fresh
+All six pass, and so do the 93 checks in `temporal/tests/`. Exactly one check skips on a fresh
 clone: `test_forest.mjs`'s gzip leg reads `models.json.gz`, which `export_models.py` writes beside
 `models.json` and which is gitignored, so it prints a skip line until the export has been run.
 Everything else runs from committed files — the binary leg prefers `models.bin` and falls back to

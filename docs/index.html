@@ -196,6 +196,49 @@
 
   /* ---- panel ---- */
   .panel { margin-top: 24px; }
+  /* Alphabet chart. The hands are SVG built from reference.json's landmarks, so they inherit
+     the theme the same way the rest of the page does and cost no image request. */
+  #refwrap { margin-top: 24px; }
+  #refhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  #reftoggle {
+    font: inherit; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); background: none; border: 1px solid var(--btn-line);
+    border-radius: 999px; padding: 3px 10px; cursor: pointer;
+  }
+  #reftoggle:hover { color: var(--ink); border-color: var(--tick); }
+  #refnote { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
+  #refchart {
+    display: grid; gap: 8px; margin-top: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  }
+  #refchart[hidden] { display: none; }
+  .refcell {
+    margin: 0; padding: 6px 2px 4px; text-align: center;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+    transition: border-color .12s, background .12s;
+  }
+  .refcell svg { display: block; margin: 0 auto; }
+  .refcell figcaption {
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  .refhow {
+    font-size: 11px; font-weight: 400; line-height: 1.35; color: var(--dim);
+    text-wrap: balance; padding: 0 4px 2px;
+  }
+  .refcell .bone { stroke: var(--dim); stroke-width: 2; stroke-linecap: round; fill: none; }
+  .refcell .joint { fill: var(--dim); }
+  .refcell .tip { fill: var(--ink); }
+  .refcell .trail { stroke: var(--tracking); stroke-width: 1.6; fill: none; stroke-dasharray: 3 2; }
+  .movetag {
+    font-size: 9px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--tracking);
+  }
+  /* The letter the page just emitted, so the chart answers "was that what I meant?" */
+  .refcell.lit { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+  .refcell.lit .bone { stroke: var(--accent); }
+  .refcell.lit .joint, .refcell.lit .tip { fill: var(--accent); }
+  @media (prefers-reduced-motion: reduce) { .refcell { transition: none; } }
   h2 {
     margin: 22px 0 0;
     font-size: 12px;
@@ -282,6 +325,21 @@
   <div id="word" aria-live="polite"></div>
 
   <div id="fatal" hidden><b>Problem</b><span id="fatalmsg"></span></div>
+
+  <section class="panel" id="refwrap">
+    <div id="refhead">
+      <h2>The alphabet</h2>
+      <button id="reftoggle" type="button" aria-expanded="true" aria-controls="refchart">Hide</button>
+    </div>
+    <p id="refnote">
+      Each hand is drawn from the landmarks this model was trained on, not from a photograph, so
+      it shows the shape the classifier is actually looking for &mdash; one signer's hands, at the
+      angle they were held. The drawings are flat, so the six fists look alike and the sideways
+      letters look foreshortened; the sentence under each one is what tells them apart. J and Z
+      move, and the hand shown is where the movement starts.
+    </p>
+    <div id="refchart"></div>
+  </section>
 
   <section class="panel">
     <h2>Live readout</h2>

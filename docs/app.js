@@ -36,6 +36,7 @@ import {
 import { loadModels, predictProba } from './forest.js';
 import { buildIndex, closestWord, posteriorsFor } from './words.js';
 import { Segmenter, NO_HAND, SETTLING, HOLD, TRACKING } from './segmenter.js';
+import { buildChart } from './reference.js';
 
 const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18';
 const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/'
@@ -278,6 +279,7 @@ function boot() {
   let th = null;
   let seg = null;
   let models = null;
+  let chart = null;
   // Letters on every load, never persisted: a visitor returning to a page silently left in
   // numbers mode would see spurious zeros from a relaxed hand with no cue why.
   let mode = 'letters';
@@ -452,6 +454,29 @@ function boot() {
     clearProblem('mode');
     buildSegmenter();
     paintMode();
+  }
+
+  async function loadChart() {
+    const host = document.getElementById('refchart');
+    const toggle = document.getElementById('reftoggle');
+    if (!host || !toggle) return;
+    toggle.addEventListener('click', () => {
+      const hide = !host.hidden;
+      host.hidden = hide;
+      toggle.textContent = hide ? 'Show' : 'Hide';
+      toggle.setAttribute('aria-expanded', String(!hide));
+    });
+    try {
+      const res = await fetch('./reference.json');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      chart = buildChart(host, data);
+    } catch (err) {
+      // Deliberately not problem(): the chart is a convenience and the page works without it.
+      // Hiding the control is better than leaving a Hide button over an empty grid.
+      document.getElementById('refwrap')?.setAttribute('hidden', '');
+      console.warn('alphabet chart unavailable:', err.message);
+    }
   }
 
   async function load() {
@@ -830,6 +855,9 @@ function boot() {
     ui.word.textContent = '';
     ui.letters.textContent = letters.join('');
     ui.lastem.textContent = `${em.letter} (${em.kind})`;
+    // The chart is on the same screen as the camera so it can answer "was that what I meant?".
+    // chart is null until reference.json lands, and a digit has no cell, so highlight() no-ops.
+    if (chart) chart.highlight(em.letter);
     const line = document.createElement('div');
     const conf = Number.isFinite(em.confidence) ? em.confidence.toFixed(2) : '?';
     line.textContent = `${t.toFixed(2)}  ${em.letter}  ${em.kind.padEnd(6)} p=${conf}`;
@@ -1039,6 +1067,7 @@ function boot() {
     // suppression that stops one held letter emitting twice.
   });
 
+  loadChart();
   load();
 }
 

@@ -11,7 +11,7 @@ The first trains a CNN on 28x28 pixel images. It scores between 95% and 99% on i
 
 ### Try it
 
-The third approach is hosted at **[henryyhong.com/ASL-Classification](https://henryyhong.com/ASL-Classification/)**. There is nothing to install, and the camera frames stay on your machine: the page downloads the models — `models.bin.gz` and a small `models.meta.json`, **1,184,403 B on the wire**, about 1.18 MB — and runs them locally. Chrome and Safari both work. Allow the camera, then sign into the box. The forest grew 22.8% this release and the download shrank anyway, because the three forests now ship packed instead of as JSON. JSON is the form the page fetched until this release, and the same trees in it are 20.4 MB raw and 3,703,057 B gzipped, which is how GitHub Pages would serve them. `docs/models.json` stays committed as the readable reference; `docs/README.md` has the format and the parity measurements.
+The third approach is hosted at **[henryyhong.com/ASL-Classification](https://henryyhong.com/ASL-Classification/)**. There is nothing to install, and the camera frames stay on your machine: the page downloads the models — `models.bin.gz` and a small `models.meta.json`, **1,184,403 B on the wire**, about 1.18 MB — and runs them locally. Chrome and Safari both work. Allow the camera, then sign into the box. An alphabet chart sits under the camera so you can look up a letter without leaving the page; the hands in it are drawn from the landmarks the model was trained on rather than from photographs, so they show the shape the classifier is actually looking for, and each carries a written description because a flat drawing cannot separate the six fists. The forest grew 22.8% this release and the download shrank anyway, because the three forests now ship packed instead of as JSON. JSON is the form the page fetched until this release, and the same trees in it are 20.4 MB raw and 3,703,057 B gzipped, which is how GitHub Pages would serve them. `docs/models.json` stays committed as the readable reference; `docs/README.md` has the format and the parity measurements.
 
 <img width="525" alt="ASL" src="https://github.com/user-attachments/assets/7a6fde28-68aa-4d7b-92a0-115bef967a6f" />
 <img width="604" alt="ASL3" src="https://github.com/user-attachments/assets/c56a280c-6667-4226-b86d-fa9c79073faa" />
@@ -112,7 +112,7 @@ ASL/
     ├── models.meta.json         class lists, feature tags, thresholds and the binary's section offsets
     ├── parity_probes.py, parity.json   1,215 probes per forest against sklearn, stamped with the build id
     ├── golden.json              Python's answers for 41 real frames; the page checks itself on load
-    ├── test_*.mjs               five Node test files
+    ├── test_*.mjs               six Node test files
     ├── devserver.py             a local server that also collects the page's diagnostics
     └── make_demo.sh             screen recording -> the GIF at the top of this file
 ```
