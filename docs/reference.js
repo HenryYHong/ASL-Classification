@@ -9,16 +9,23 @@
 // MediaPipe's landmark order is fixed (0 wrist, 1-4 thumb, 5-8 index, 9-12 middle, 13-16 ring,
 // 17-20 pinky), so the bone list below is a property of the landmarker, not of this data.
 
-const BONES = [
-  [0, 1], [1, 2], [2, 3], [3, 4],            // thumb
-  [0, 5], [5, 6], [6, 7], [7, 8],            // index
-  [0, 9], [9, 10], [10, 11], [11, 12],       // middle
-  [0, 13], [13, 14], [14, 15], [15, 16],     // ring
-  [0, 17], [17, 18], [18, 19], [19, 20],     // pinky
-  [5, 9], [9, 13], [13, 17],                 // knuckle bridge
+// Fingers as chunky capsules, the palm as a filled slab. An earlier version drew the 21
+// landmarks as dots joined by thin bones, which is how MediaPipe visualizes a hand and reads
+// as an x-ray: the point of this chart is to be friendly to somebody who does not fingerspell
+// yet, and a skeleton is not that. Same landmarks, drawn as a hand instead of as its bones.
+
+//: MediaPipe's landmark order is fixed: 0 wrist, 1-4 thumb, 5-8 index, 9-12 middle,
+//: 13-16 ring, 17-20 pinky. These chains are a property of the landmarker, not of this data.
+const FINGERS = [
+  [1, 2, 3, 4],        // thumb
+  [5, 6, 7, 8],        // index
+  [9, 10, 11, 12],     // middle
+  [13, 14, 15, 16],    // ring
+  [17, 18, 19, 20],    // pinky
 ];
-//: Fingertips get a slightly larger dot: they are what distinguishes most of the confusable pairs.
-const TIPS = new Set([4, 8, 12, 16, 20]);
+//: The palm slab: wrist, then across the knuckles and back. Drawn filled and behind the
+//: fingers so the joins disappear into it.
+const PALM = [0, 17, 13, 9, 5];
 
 /** Fit the 21 points into a `size` box with padding, preserving aspect. */
 function fit(lm, size, pad) {
@@ -37,33 +44,33 @@ function fit(lm, size, pad) {
 
 /** One <svg> hand. `motion` draws the trail marker J and Z need. */
 export function handSvg(lm, { size = 84, motion = false } = {}) {
-  const p = fit(lm, size, 9);
+  const p = fit(lm, size, 11);
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
   svg.setAttribute("width", String(size));
   svg.setAttribute("height", String(size));
   svg.setAttribute("aria-hidden", "true");
-  for (const [a, b] of BONES) {
-    const l = document.createElementNS(ns, "line");
-    l.setAttribute("x1", p[a][0].toFixed(2));
-    l.setAttribute("y1", p[a][1].toFixed(2));
-    l.setAttribute("x2", p[b][0].toFixed(2));
-    l.setAttribute("y2", p[b][1].toFixed(2));
-    l.setAttribute("class", "bone");
-    svg.appendChild(l);
+  const at = (i) => `${p[i][0].toFixed(2)},${p[i][1].toFixed(2)}`;
+
+  // Palm first, so the finger capsules overlap it and the joins vanish.
+  const palm = document.createElementNS(ns, "polygon");
+  palm.setAttribute("points", PALM.map(at).join(" "));
+  palm.setAttribute("class", "palm");
+  svg.appendChild(palm);
+
+  for (const chain of FINGERS) {
+    const f = document.createElementNS(ns, "polyline");
+    // Start the capsule at the knuckle's parent so the finger reads as joined to the palm.
+    const from = chain[0] === 1 ? 0 : chain[0];
+    f.setAttribute("points", [from, ...chain].map(at).join(" "));
+    f.setAttribute("class", "finger");
+    svg.appendChild(f);
   }
-  for (let i = 0; i < p.length; i++) {
-    const c = document.createElementNS(ns, "circle");
-    c.setAttribute("cx", p[i][0].toFixed(2));
-    c.setAttribute("cy", p[i][1].toFixed(2));
-    c.setAttribute("r", TIPS.has(i) ? "2.6" : "1.7");
-    c.setAttribute("class", TIPS.has(i) ? "joint tip" : "joint");
-    svg.appendChild(c);
-  }
+
   if (motion) {
     const a = document.createElementNS(ns, "path");
-    a.setAttribute("d", `M ${size * 0.62} ${size * 0.80} q ${size * 0.16} ${size * 0.10} ${size * 0.26} ${-size * 0.06}`);
+    a.setAttribute("d", `M ${(size * 0.60).toFixed(1)} ${(size * 0.82).toFixed(1)} q ${(size * 0.16).toFixed(1)} ${(size * 0.11).toFixed(1)} ${(size * 0.27).toFixed(1)} ${(-size * 0.05).toFixed(1)}`);
     a.setAttribute("class", "trail");
     svg.appendChild(a);
   }

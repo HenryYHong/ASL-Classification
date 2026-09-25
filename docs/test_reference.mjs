@@ -90,15 +90,20 @@ check('buildChart renders one cell per letter', chart.count === 26 && host.child
 const first = host.children[0];
 check('a cell is an svg plus a caption',
   first.tagName.toLowerCase() === 'figure' && first.querySelector('svg') && first.querySelector('figcaption'));
-check('a hand has 23 bones and 21 joints',
-  first.querySelectorAll('line').length === 23 && first.querySelectorAll('circle').length === 21);
+// One filled palm and five capsule fingers -- the shapes, not the skeleton the first version
+// drew. A hand that loses a finger here is a hand that lost a landmark chain.
+check('a hand is one palm and five fingers',
+  first.querySelectorAll('polygon').length === 1 && first.querySelectorAll('polyline').length === 5);
+check('no bare joints or bones are drawn (it must not read as an x-ray)',
+  first.querySelectorAll('circle').length === 0 && first.querySelectorAll('line').length === 0);
 check('only the moving letters draw a trail',
   [...host.children].filter((c) => c.querySelector('.trail')).length === 2);
 
 // The drawing must fit its box whatever the landmarks are, or a cell overlaps its neighbour.
 const svg = handSvg(data.letters.L.lm, { size: 84 });
-const coords = [...svg.querySelectorAll('circle')].flatMap(
-  (c) => [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))]);
+const pts = (el) => el.getAttribute('points').trim().split(/\s+/).map((pair) => pair.split(',').map(Number));
+const coords = [...svg.querySelectorAll('polygon'), ...svg.querySelectorAll('polyline')]
+  .flatMap((el) => pts(el).flat());
 check('the hand is fitted inside its box',
   coords.every((v) => v >= 0 && v <= 84), `range ${Math.min(...coords).toFixed(1)}..${Math.max(...coords).toFixed(1)}`);
 // One scale for both axes: a per-axis fit would stretch L's long thumb and stop it being an L.

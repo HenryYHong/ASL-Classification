@@ -21,6 +21,7 @@
     --meter-bg: #1b1e24;
     --tick: #565c68;
     --rule: #2a2f38;
+    --hand: #8b93a3;
   }
   /* Light is a palette swap, nothing else: every rule below reads these variables, and the
      overlay colors app.js sets as `var(--hold)` &c. re-resolve on their own when the attribute
@@ -44,6 +45,7 @@
       --meter-bg: #e4e4df;
       --tick: #8e939c;
       --rule: #dadad4;
+      --hand: #9aa0aa;
     }
   }
   :root[data-theme="light"] {
@@ -63,6 +65,7 @@
     --meter-bg: #e4e4df;
     --tick: #8e939c;
     --rule: #dadad4;
+    --hand: #9aa0aa;
   }
   * { box-sizing: border-box; }
   /* A class rule with an explicit display beats the UA's [hidden] rule, so .curtain{display:flex}
@@ -198,7 +201,22 @@
   .panel { margin-top: 24px; }
   /* Alphabet chart. The hands are SVG built from reference.json's landmarks, so they inherit
      the theme the same way the rest of the page does and cost no image request. */
-  #refwrap { margin-top: 24px; }
+  /* The camera and the chart side by side, so a letter can be looked up without scrolling
+     away from the thing you are signing at. Below 900px there is no room for a column, so the
+     row becomes a stack and the chart goes back under the video. */
+  .stagerow { display: flex; gap: 14px; align-items: flex-start; }
+  .stagerow .frame { flex: 1 1 auto; min-width: 0; }
+  #refwrap {
+    flex: 0 0 300px; margin-top: 0; display: flex; flex-direction: column; min-width: 0;
+    /* Track the camera rather than a fixed cap: the frame is 16:9 and takes the rest of the
+       row, so its height is (row width - this column - the gap) * 9/16. Clamped so the column
+       is still usable before the video has a size and never taller than the fold. */
+    max-height: clamp(280px, calc((100vw - 380px) * 0.5625), 560px);
+  }
+  @media (max-width: 900px) {
+    .stagerow { display: block; }
+    #refwrap { margin-top: 18px; max-height: none; }
+  }
   #refhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
   #reftoggle {
     font: inherit; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
@@ -206,11 +224,13 @@
     border-radius: 999px; padding: 3px 10px; cursor: pointer;
   }
   #reftoggle:hover { color: var(--ink); border-color: var(--tick); }
-  #refnote { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
+  #refnote { color: var(--dim); font-size: 11.5px; line-height: 1.45; margin: 5px 0 0; }
   #refchart {
-    display: grid; gap: 8px; margin-top: 12px;
-    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    display: grid; gap: 8px; margin-top: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    overflow-y: auto; overscroll-behavior: contain; padding-right: 4px;
   }
+  @media (max-width: 900px) { #refchart { overflow-y: visible; } }
   #refchart[hidden] { display: none; }
   .refcell {
     margin: 0; padding: 6px 2px 4px; text-align: center;
@@ -223,21 +243,25 @@
     display: flex; flex-direction: column; align-items: center; gap: 2px;
   }
   .refhow {
-    font-size: 11px; font-weight: 400; line-height: 1.35; color: var(--dim);
+    font-size: 10.5px; font-weight: 400; line-height: 1.32; color: var(--dim);
     text-wrap: balance; padding: 0 4px 2px;
   }
-  .refcell .bone { stroke: var(--dim); stroke-width: 2; stroke-linecap: round; fill: none; }
-  .refcell .joint { fill: var(--dim); }
-  .refcell .tip { fill: var(--ink); }
-  .refcell .trail { stroke: var(--tracking); stroke-width: 1.6; fill: none; stroke-dasharray: 3 2; }
+  /* One color for the whole hand: the palm filled, the fingers drawn as round-capped
+     capsules over it, so the shape reads as a hand rather than as a skeleton. */
+  .refcell .palm { fill: var(--hand); stroke: var(--hand); stroke-width: 9; stroke-linejoin: round; }
+  .refcell .finger {
+    fill: none; stroke: var(--hand); stroke-width: 8.5;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .refcell .trail { stroke: var(--tracking); stroke-width: 2; fill: none; stroke-dasharray: 3.5 2.5; stroke-linecap: round; }
   .movetag {
     font-size: 9px; font-weight: 500; letter-spacing: .05em; text-transform: uppercase;
     color: var(--tracking);
   }
   /* The letter the page just emitted, so the chart answers "was that what I meant?" */
   .refcell.lit { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
-  .refcell.lit .bone { stroke: var(--accent); }
-  .refcell.lit .joint, .refcell.lit .tip { fill: var(--accent); }
+  .refcell.lit .palm { fill: var(--accent); stroke: var(--accent); }
+  .refcell.lit .finger { stroke: var(--accent); }
   @media (prefers-reduced-motion: reduce) { .refcell { transition: none; } }
   h2 {
     margin: 22px 0 0;
@@ -306,13 +330,27 @@
     <button id="theme" type="button" title="Switch theme" aria-label="Switch theme">&#9789;</button>
   </header>
 
-  <div class="frame">
-    <video id="cam" playsinline muted autoplay></video>
-    <canvas id="view" width="960" height="540"></canvas>
-    <div class="curtain" id="curtain">
-      <button id="start" disabled>Start camera</button>
-      <div id="loadstate"></div>
+  <div class="stagerow">
+    <div class="frame">
+      <video id="cam" playsinline muted autoplay></video>
+      <canvas id="view" width="960" height="540"></canvas>
+      <div class="curtain" id="curtain">
+        <button id="start" disabled>Start camera</button>
+        <div id="loadstate"></div>
+      </div>
     </div>
+
+    <section class="panel" id="refwrap">
+      <div id="refhead">
+        <h2>The alphabet</h2>
+        <button id="reftoggle" type="button" aria-expanded="true" aria-controls="refchart">Hide</button>
+      </div>
+      <p id="refnote" title="The hands come from the medoid of each letter's training frames, so the chart shows the shape the classifier is actually looking for rather than an artist's idea of it. Because the drawings are flat projections, the six fists look alike and the sideways letters look foreshortened; the sentence under each letter is what separates them. J and Z move, and the hand shown is where the movement starts.">
+        Drawn from the landmarks the model was trained on &mdash; one signer's hands, flat, at the
+        angle they were held. The sentence under each letter is what a flat drawing cannot show.
+      </p>
+      <div id="refchart"></div>
+    </section>
   </div>
 
   <div id="outbar">
@@ -326,20 +364,6 @@
 
   <div id="fatal" hidden><b>Problem</b><span id="fatalmsg"></span></div>
 
-  <section class="panel" id="refwrap">
-    <div id="refhead">
-      <h2>The alphabet</h2>
-      <button id="reftoggle" type="button" aria-expanded="true" aria-controls="refchart">Hide</button>
-    </div>
-    <p id="refnote">
-      Each hand is drawn from the landmarks this model was trained on, not from a photograph, so
-      it shows the shape the classifier is actually looking for &mdash; one signer's hands, at the
-      angle they were held. The drawings are flat, so the six fists look alike and the sideways
-      letters look foreshortened; the sentence under each one is what tells them apart. J and Z
-      move, and the hand shown is where the movement starts.
-    </p>
-    <div id="refchart"></div>
-  </section>
 
   <section class="panel">
     <h2>Live readout</h2>
