@@ -42,6 +42,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPORAL = os.path.join(HERE, "..", "temporal")
+sys.path.insert(0, os.path.abspath(TEMPORAL))
 
 #: Probe count. This is the number docs/README.md quotes, so it is pinned here and again in
 #: docs/test_forest.mjs; the two must move together or the claim stops meaning anything.

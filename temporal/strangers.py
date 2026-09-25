@@ -57,6 +57,7 @@ ASLNOW = os.path.join(HERE, "aslnow.npz")
 ANKARA = os.path.join(HERE, "digits_ankara.npz")
 ASLHG = os.path.join(HERE, "aslhg.npz")
 AYURAJ = os.path.join(HERE, "ayuraj.npz")
+IDLE_STRANGERS = os.path.join(HERE, "idle_strangers.npz")
 #: Digits whose ASL handshape is a letter's, exactly.
 DIGIT_LETTERS = {"0": "O", "2": "V", "6": "W", "9": "F"}
 EMPTY = np.zeros((0, 21, 2))
@@ -80,6 +81,26 @@ NEVER_TRAIN = (AYURAJ,)
 #: a seed sweep then measures the forest and the jitter, not which 25 photographs were kept.
 ASLHG_CAP = 25
 CAP_SEED = 0
+
+
+def load_idle_strangers(path=IDLE_STRANGERS):
+    """-> (P (N,21,2), clip (N,)) frames of other people's hands that are NOT holding a letter.
+
+    Not a letter set: these are the head and tail frames of the OpenHands clips, kept only
+    where they are far from their own clip's held shape (ingest_idle_strangers.py has the rule
+    and the threshold sweep). They train the REST class, which is what gives the forest
+    somewhere to put a resting hand other than into one of the 24 letters.
+
+    Why these and not the author's own idle holds: idle_holds.npz is the GATE. Training on the
+    frames the gate tests would make the gate measure memorization, and the whole point of the
+    gate is that it is the one number here nothing trains on. These frames come from other
+    people entirely, so the gate stays out of sample.
+    """
+    if not os.path.isfile(path):
+        raise SystemExit(f"{path} is missing. Build it with:\n"
+                         f"    ./.venv/bin/python temporal/ingest_idle_strangers.py --root <clips>")
+    d = np.load(path, allow_pickle=True)
+    return d["P"].astype(np.float64), np.asarray([str(x) for x in d["clip"]])
 
 
 def training_source(path):

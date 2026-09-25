@@ -27,7 +27,9 @@
   "VOTE_MARGIN_CLEAR": 0.2,
   "VOTE_PROB_FLOOR": 0.55,
   "VOTE_PROB_LETTER": {
-    "G": 0.75
+    "G": 0.88,
+    "Q": 0.62,
+    "A": 0.6
   },
   "HOLD_SETTLE": 0.25,
   "D_WAIT": 0.35,

@@ -99,7 +99,7 @@ def run(seed=0, n_jobs=4, author_cap=None, aslhg_cap=None, verbose=True, signers
         tr = S_cap != s                       # the shipped draw, minus this signer
         per_tr = ST.per_class_of(P_cap[tr], L_cap[tr])
         X, y, _ = T.training_rows(ST.merge(base, per_tr), seed=seed)
-        model = T.make_forest(seed, n_jobs=n_jobs).fit(X, y)
+        model = T.fit_letters(X, y, seed, n_jobs)
         pr = np.zeros((int(te.sum()), NC))
         pr[:, model.classes_.astype(int)] = model.predict_proba(T.FEATFN(P_all[te]))
         pred = pr.argmax(1)

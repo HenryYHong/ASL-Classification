@@ -307,7 +307,7 @@ class Thresholds:
     #: was being carried into models.json and models.meta.json as a per-class floor on a forest
     #: whose classes are 0-9, which is a thing a reader has to disprove before they can trust
     #: the block. An empty dict states it instead.
-    VOTE_PROB_LETTER: dict = field(default_factory=lambda: {"G": 0.75})
+    VOTE_PROB_LETTER: dict = field(default_factory=lambda: {"G": 0.88, "Q": 0.62, "A": 0.60})
     HOLD_SETTLE: float = 0.25       # seconds of stillness required to enter HOLD. 0.15 was too
                                     # permissive once a second session raised confidence: a brief
                                     # pause while moving between letters counted as a hold, and

@@ -15,8 +15,8 @@ temporal/external_clips.npz
 # .json on the fly, so committing the .gz beside it would buy nothing. models.json itself stays
 # committed as the readable reference even though the page now fetches the binary pair instead.
 # Kept local for the gzip test.
-# (Pages compresses it on the fly at about level 5: `gzip -5 -c docs/models.json` is 3,703,069 B
-# here and the deployed site returns 3,703,057 B, against 3,461,703 B at level 9, which is what
+# (Pages compresses it on the fly at about level 5: `gzip -5 -c docs/models.json` is 3,703,083 B
+# here and the deployed site returns 3,703,083 B, against 3,461,712 B at level 9, which is what
 # export_models.py writes.)
 docs/models.json.gz
 
@@ -25,7 +25,7 @@ docs/models.json.gz
 # './models.meta.json')): GitHub Pages compresses text media types on the fly but leaves
 # application/octet-stream alone, so serving this raw file would put 2,555,774 B on the wire
 # where docs/models.bin.gz puts 1,183,438 B (measured on the committed export).
-# docs/models.meta.json (2,726 B: class lists, feature tags, thresholds, section offsets) and
+# docs/models.meta.json (2,743 B: class lists, feature tags, thresholds, section offsets) and
 # docs/parity.json (1,062 B, from docs/parity_probes.py) are small and
 # are committed beside it; both are bound to the .bin by its build id, so all three move
 # together or docs/test_forest.mjs says so.

@@ -67,7 +67,7 @@ NC = len(LETTERS)
 
 def fit(per_class, seed, ruleset=None, n_jobs=4):
     X, y, _ = T.training_rows(per_class, ruleset=T.RULESET if ruleset is None else ruleset, seed=seed)
-    return T.make_forest(seed, n_jobs=n_jobs).fit(X, y)
+    return T.fit_letters(X, y, seed, n_jobs)
 
 
 def proba(model, X):

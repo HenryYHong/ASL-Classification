@@ -66,6 +66,20 @@ if (payload.static.feature === 'static/v4') {
   if (!ok) failures++;
   console.log(`${ok ? 'pass' : 'FAIL'}  letter forest is static/v4: dim ${staticModel.dim} (112), ` +
               `${staticModel.nClasses} classes (24)`);
+  // Probabilities sum to 1 across the 24 letters. A forest carrying an extra class whose mass
+  // was held back would break this, which is exactly what temporal/rest_probe.py measured and
+  // why that class is not here: it fixed the idle gate and cost two wrong letters on strangers'
+  // video. If a future export ever does hold mass back, this is the check that notices.
+  const zero = new Float64Array(112);
+  const pz = predictProba(staticModel, zero);
+  const sumz = [...pz].reduce((a, b) => a + b, 0);
+  // 1e-3, not 0: models.json rounds leaves to 4 decimals, so the row sums to 1.000003 rather
+  // than exactly 1. The tolerance sits well above that and far below what an extra class would
+  // take -- the REST forest rest_probe.py measured held back 5.35% on this same vector.
+  const sumOk = pz.length === 24 && Math.abs(sumz - 1) < 1e-3;
+  if (!sumOk) failures++;
+  console.log(`${sumOk ? 'pass' : 'FAIL'}  the 24 letter probabilities sum to 1 ` +
+              `(${sumz.toFixed(6)}): no class is holding mass back`);
 } else {
   console.log(`skip  letter forest dim 112 / 24 classes: models.json still carries ` +
               `${payload.static.feature} (${staticModel.dim}-D); regenerate with export_models.py`);

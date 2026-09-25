@@ -339,6 +339,19 @@ def training_rows(per_class, featfn=None, ruleset=RULESET, sigma=JITTER_SIGMA,
     return np.concatenate(X), np.concatenate(y), n_raw - sum(len(P) for P in kept)
 
 
+def fit_letters(X, y, seed=0, n_jobs=4, rest=False):
+    """Fit the shipped letter model on (X, y). One fit point for every trainer here.
+
+    `rest` exists as a parameter and does nothing, because a 25th REST class WAS built and
+    measured and is not what ships: temporal/rest_probe.py has the numbers. It fixed the idle
+    gate, which the per-letter floors fix on their own, and cost two wrong letters on 266 clips
+    of strangers' video. Keeping the seam documented is cheaper than rediscovering it.
+    """
+    if rest:
+        raise SystemExit("the REST class is not shipped; see temporal/rest_probe.py for why")
+    return make_forest(seed, n_jobs=n_jobs).fit(X, y)
+
+
 def make_forest(seed=0, n_jobs=4):
     return RandomForestClassifier(random_state=seed, n_jobs=n_jobs, **FOREST)
 
@@ -423,7 +436,7 @@ def main():
     rows = {}
     for name, fn in (("legacy", legacy_feature), ("shipped", FEATFN)):
         Xtr, ytr = build(tr, fn)
-        model = make_forest(args.seed).fit(Xtr, ytr)
+        model = make_forest(args.seed).fit(Xtr, ytr)   # ablation only: no REST, no wrapper
         rows[name] = []
         for k in (0.7, 0.85, 1.0, 1.2, 1.5):
             Xte, yte = build(te, fn, rescale=k)
@@ -448,7 +461,7 @@ def main():
               f"x{1 + JITTER_COPIES} with jitter sigma {JITTER_SIGMA} (originals kept), "
               f"{FEATURE_DIM}-D {FEATURE_TAG}, RF({forest['n_estimators']}, "
               f"min_samples_leaf={forest['min_samples_leaf']})")
-        model = make_forest(args.seed).fit(Xall, yall)
+        model = fit_letters(Xall, yall, args.seed)
     assert list(model.classes_) == list(range(len(LETTERS))), \
         "a letter has no training frame; the segmenter indexes classes by position"
     blob = {"model": model, "classes": LETTERS, "feature": FEATURE_TAG,

@@ -143,7 +143,7 @@ it, ever.
 | **Leave-one-SIGNER-out, 10 known signers** | **0.9406** ± 0.0033 over 3 seeds; at seed 0, 0.9453 pooled over all 23,984 held-out frames, per signer 0.8796 to 1.0000 (mean 0.9452 ± 0.0397) | `crossval_signers.py`: hold out all 2,400 frames of one ASL-HG signer, train on the other nine at the shipped cap plus my sessions and the other stranger sets. The first by-signer number the letters have ever had |
 | — per signer, seed 0 | P1 0.8879, P2 0.9583, P3 0.9396, P4 1.0000, P5 0.9946, P6 0.9333, P7 0.9175, P8 0.8796, P9 0.9829, P10 0.9583 | the spread describes these ten volunteers, not an interval for the next visitor |
 | — the letters that fail there, seed 0 | U 0.671 (read as R on 329 of 1,000), R 0.703 (as U on 224), C 0.816 (as O on 184), S 0.814 (as N on 111), M 0.833 (as N on 166); nothing else under 0.90 | nine other signers in training does not fix U/R, so it is a feature defect and not a data shortage |
-| **ASLNow held out entirely** | **0.8292** ± 0.0061 over 3 seeds; 0.836 at seed 0. Weakest at seed 0: R 0.51, M 0.60, G 0.62, U 0.64, X 0.66, S 0.67 | `crossval_strangers.py`: train on my sessions, the Ankara photos and ASL-HG; test on 1,874 records the forest never saw, through the browser's own landmarker, one frame per record |
+| **ASLNow held out entirely** | **0.8292** ± 0.0061 over 3 seeds; 0.836 at seed 0 | `crossval_strangers.py`: train on my sessions, the Ankara photos and ASL-HG; test on 1,874 records the forest never saw, through the browser's own landmarker, one frame per record |
 | — the vote gate on those records | emits on 0.75 of single frames, right on 0.907 of those (seed 0) | same forest, `thresholds.DEFAULT`; one frame per record against a held sign's many windows, so this is a floor on what a visitor sees |
 | **The permanent never-train holdout** | **0.889** on the committed `model_static.p`; the previous release's pickle reads **0.797** on the same 1,111 frames | `crossval_strangers.ayuraj_report()` over the CC0 `ayuraj` set, 5 signers. Nothing may ever train on it (`strangers.NEVER_TRAIN`), so the two figures are the same measurement and the gap is the retrain |
 | — 218 signers, O/V/W/F held out | 0.9413 ± 0.0048 over 3 seeds; 0.940 at seed 0 (F 1.00, W 0.96, O 0.91, V 0.88) | train on my sessions, ASLNow and ASL-HG; test on the digit photos |
@@ -154,9 +154,9 @@ it, ever.
 
 | | result | split |
 | --- | --- | --- |
-| **A stranger holding a letter through the segmenter** | 266 clips: exactly the right letter 96 (0.361), silent 170, **0 wrong letters**. Tracked ≥ 0.60 (139 clips): 59 (0.424), 0 wrong. Tracked and ≥ 1.0 s (58 clips): 33 (0.569), 0 wrong | `replay_strangers.py` over the OpenHands fingerspelling clips: one fresh `Segmenter` and one fresh MediaPipe per clip, shipped pickles, shipped thresholds. The committed result is `openhands_replay.json`. No signer ids, so this is not a by-signer number |
+| **A stranger holding a letter through the segmenter** | 266 clips: exactly the right letter 94 (0.353), silent 172, **0 wrong letters**. Tracked ≥ 0.60 (139 clips): 58 (0.417), 0 wrong. Tracked and ≥ 1.0 s (58 clips): 33 (0.569), 0 wrong | `replay_strangers.py` over the OpenHands fingerspelling clips: one fresh `Segmenter` and one fresh MediaPipe per clip, shipped pickles, shipped thresholds. The committed result is `openhands_replay.json`. No signer ids, so this is not a by-signer number |
 | — the previous release on the same clips | 82 (0.308) / 48 (0.345) / 29 (0.500), 0 wrong. The **old** forest at the **new** floor: 95 (0.357) and **8 wrong letters**, 6 of them in the tracked cut (G→O, O→E, T→O, V→O, U→V, U→R) | the middle column is the point: the floor drop buys 13 clips on the old forest and costs 8 wrong letters on strangers' video. On the retrained forest it costs none. The floor is safe only because the forest was retrained under it, and the idle gate cannot show that — a relaxed hand is not a stranger's letter |
-| Static emission, my 71 held-out holds | exactly the right letter 68/71; first emission wrong 1/71; one wrong letter in all 71; silent 2/71 (S1-G, S2-K); cross-day 22/24; latency 0.46 s median, 0.95 s p90 (seed 0) — **identical at all three seeds** | `replay_static.py`: fold models, real timestamps, one fresh `Segmenter` per hold, shipped thresholds. The flat 0.75 floor it replaces gives 61/71, 9 silent, 20/24 |
+| Static emission, my 71 held-out holds | exactly the right letter 66/71; first emission wrong 1/71; one wrong letter in all 71; silent 4/71 (S1-G, S2-K, and two S3-G); cross-day 22/24; latency 0.50 s median, 0.97 s p90 (seed 0) | `replay_static.py`: fold models, real timestamps, one fresh `Segmenter` per hold, shipped thresholds. The two extra silences are G's own holds, paying for G's 0.88 floor |
 | Idle hand, 43 clean holds from a live browser log | 0/43 holds and 0/2,064 votes emit, at all three seeds | `idle_gate.py` on `idle_holds.npz`: one signer, one ~2-minute stretch, Tasks-API landmarks. Gated idle maxima: G 0.7087 / 0.7019 / 0.7101, and nothing else above 0.5130 |
 | Motion letters {J, Z, MOVE} | 0.951 accuracy; J+Z recall 0.946 at `P_EMIT` 0.55; MOVE read as J 2/28, as Z 0/28 | `GroupKFold(5)` by prompted item over the S1 takes: 102 events in 80 items. The label set changed in an earlier release, so this replaces the older 0.864 / 140 gestures rather than improving on it |
 | Motion, end to end on the five takes | 85 of 113 items produce their letter (was 78); 0 doubles (was 9); 0 rest-phase J/Z over 5.5 min | in-sample for the motion forest. Replayed with the per-frame MediaPipe handedness label the live path feeds, through the handedness latch; without the latch the same replay credits 79. `evaluate.py` reproduces it directly: S1 74 of 90 (`--train-session S5 --test-session S1`) plus S5 11 of 23 |
@@ -218,7 +218,7 @@ From the repository root. Recording needs a camera; everything after it does not
 ./.venv/bin/python temporal/crossval_static.py --seeds 3            # my own folds
 ./.venv/bin/python temporal/crossval_signers.py --seeds 3           # leave one of ten signers out
 ./.venv/bin/python temporal/crossval_strangers.py --seeds 3         # each stranger set held out, and the never-train set
-./.venv/bin/python temporal/idle_gate.py --seeds 3                  # must PASS at EVERY seed
+./.venv/bin/python temporal/idle_gate.py --seeds 16                  # must PASS at EVERY seed
 ./.venv/bin/python temporal/replay_static.py                        # what the floor costs on my 71 held signs
 ./.venv/bin/python temporal/replay_strangers.py --root <American>/videos --out temporal/openhands_replay.json
 ./.venv/bin/python temporal/label_events.py --out /tmp/events_check.npz   # cut events; READ its output; ALWAYS --out
@@ -232,7 +232,7 @@ cd docs && node test_forest.mjs                                     # FAILS on a
 
 Three things in that list will bite if they are skipped or run wrong.
 
-`idle_gate.py --seeds 3` is a **hard gate**, not a report. A candidate that emits on any of the
+`idle_gate.py --seeds 16` is a **hard gate**, not a report. A candidate that emits on any of the
 43 clean idle holds at any of the three jitter seeds is disqualified, and the fix is to raise
 **the emitting letter's own** floor by 0.05 in `thresholds.VOTE_PROB_LETTER` and re-run — not to
 raise the flat floor, which charges the whole alphabet for one letter's habit. A single-seed pass
@@ -337,13 +337,27 @@ out of them; that pair is where the word layer's constants came from (see `docs/
   that parked D as a low-confidence T and stayed silent instead; the shipped one reads it as D.
 - **The idle floor has 0.04 of headroom, and it is still a G.** A relaxed hand hanging at a
   laptop is a loose G, and a forest that has seen many hands is confident about it. Over the 43
-  clean idle holds at three jitter seeds, G's most confident gated idle vote is 0.7087 / 0.7019 /
-  0.7101 and **no other letter exceeds 0.5130**; sixteen of the 24 letters never win an idle vote
-  at all. That is why the floor is per letter now (`VOTE_PROB_LETTER`: G 0.75, everything else
-  0.55): 0.0399 of headroom for G and 0.0370 for the rest, the same margin on both sides.
-  Filtering the strangers' G frames and a REST class trained on the motion recordings' rest
-  windows were both tried and removed neither. One signer, one two-minute stretch;
-  `idle_gate.py --seeds 3` is the thing to re-run after the next live session.
+  clean idle holds, the letters a RESTING hand is read as are G, Q and A, and nothing else comes
+  near: over sixteen jitter seeds the worst gated idle vote is G 0.8139, Q 0.5701, A 0.5189 and
+  then M 0.4350. That is not noise, it is the geometry — a relaxed hand is a loose fist with the
+  thumb somewhere (A), angled down (Q), or with index and thumb apart (G). So the floor is per
+  letter (`VOTE_PROB_LETTER`: G 0.85, Q 0.62, A 0.60, everything else 0.55), each set above the
+  worst draw rather than above one.
+- **A 25th class for "not a letter" also fixes it, and still loses.** With 24 classes a resting
+  hand must be assigned *some* letter, so the obvious fix is to give the forest somewhere else
+  to put it: a REST class trained on `idle_strangers.npz`, 530 frames of OTHER people's hands
+  caught not making a letter, cut from the OpenHands clips by `ingest_idle_strangers.py`. It
+  works — one jittered copy takes `idle_gate.py --seeds 16` from failing at 4 of 8 to passing
+  all 16, and leaves replay at 68/71 rather than 66/71. It also costs **2 wrong letters on the
+  266 OpenHands clips against 0**, at seeds 0, 1 and 2 alike, and the margin it buys is margin
+  the three floors above already buy. So it is not what ships. `rest_probe.py` has the whole
+  measurement, including what does not work: 2 copies costs a D hold, 8 copies FAILS outright
+  (the REST mass reshapes the letter boundaries and idle G climbs back to 0.7927), and filtering
+  the negatives to drop frames near a real letter breaks the gate, because the near-misses are
+  what do the work. The reasoning is sound and the numbers still say no; that is why the file is
+  committed instead of deleted.
+  One signer, one two-minute stretch; `idle_gate.py --seeds 16` is the thing to re-run after the
+  next live session.
 - **The floor drop is safe only because the forest was retrained under it.** Dropping 23 of the
   24 letters from 0.75 to 0.55 on the *previous* forest buys 13 more correct OpenHands clips and
   costs **8 wrong letters** on strangers' video (G→O, O→E, T→O, V→O, U→V, U→R in the tracked

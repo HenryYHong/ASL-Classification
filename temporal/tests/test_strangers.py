@@ -304,9 +304,20 @@ def test_floor_is_real():
     # a floor above the confident route would be a no-op (thresholds.py, VOTE_PROB)
     assert DEFAULT.VOTE_PROB_FLOOR <= DEFAULT.VOTE_PROB, (DEFAULT.VOTE_PROB_FLOOR, DEFAULT.VOTE_PROB)
     assert DEFAULT.VOTE_PROB == DEFAULT.VOTE_PROB_FLOOR == 0.55
-    assert DEFAULT.VOTE_PROB_LETTER == {"G": 0.75}
-    assert DEFAULT.vote_prob_for("G") == DEFAULT.vote_floor_for("G") == 0.75
-    assert DEFAULT.vote_prob_for("A") == DEFAULT.vote_floor_for("A") == 0.55
+    # G, Q and A are the three letters a RESTING hand resembles -- a loose fist with the thumb
+    # somewhere is an A, the same hand angled down is a Q, index and thumb apart is a G -- and
+    # they are exactly the three that breach a flat floor on the idle holds. Measured over 16
+    # jitter seeds of the shipped recipe: worst idle G 0.8433, Q 0.5504, A 0.5310, and nothing
+    # else above 0.5105. The floors sit above those, and idle_gate.py --seeds 16 is the check.
+    # G is 0.88 rather than 0.85 because the margin is nearly free: 0.85 leaves 0.0067 of room
+    # and 0.88 leaves 0.0367, for 0.7% of real G on held-out signers (0.9640 -> 0.9570) and not
+    # one extra hold on replay_static.py, whose G sweep is flat from 0.85 to 0.90.
+    assert DEFAULT.VOTE_PROB_LETTER == {"G": 0.88, "Q": 0.62, "A": 0.60}
+    assert DEFAULT.vote_prob_for("G") == DEFAULT.vote_floor_for("G") == 0.88
+    assert DEFAULT.vote_prob_for("Q") == DEFAULT.vote_floor_for("Q") == 0.62
+    assert DEFAULT.vote_prob_for("A") == DEFAULT.vote_floor_for("A") == 0.60
+    # a letter nobody named keeps the flat floor
+    assert DEFAULT.vote_prob_for("B") == DEFAULT.vote_floor_for("B") == 0.55
 
 
 def test_both_vote_routes_read_the_per_letter_floor():

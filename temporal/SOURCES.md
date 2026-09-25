@@ -382,6 +382,21 @@ pooled figure is scored on a detection-biased subset. Quote it pooled, never per
 subdirectories and a `glosses.csv`. 266 of the clips are the 24 static letters, and those 266
 are what this project reads.
 
+**Two artifacts are derived from these clips and both are committed.** `openhands_replay.json`
+is the per-clip result of replaying them through the segmenter. `idle_strangers.npz` is 530
+landmark frames cut from the head and tail of 123 of them by `ingest_idle_strangers.py` — the
+moments where the hand is tracked but demonstrably not holding the letter, kept only when a
+frame is at least 0.35 palm units from its own clip's held shape. They train the REST class
+(`letter_model.py`), which is what gives the forest somewhere to put a resting hand instead of
+having to call it a letter. The videos themselves are not redistributed; the landmark file is a
+derived work of a CC BY 4.0 source, which this attribution covers.
+
+The frames are NOT a by-signer set and must never be quoted as one, for the same reason the
+replay is not: these clips carry no participant ids. And they are deliberately not the author's
+own idle holds — `idle_holds.npz` is the GATE, and a gate trained on its own test set measures
+memorization rather than generalization. Training the REST class on strangers and testing it on
+one signer's resting hand is what keeps `idle_gate.py` an out-of-sample measurement.
+
 ```
 # unzip American.zip somewhere outside the repository, then:
 ./.venv/bin/python temporal/replay_strangers.py --root <American>/videos \

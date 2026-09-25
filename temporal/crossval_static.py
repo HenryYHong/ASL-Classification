@@ -194,11 +194,13 @@ def run(seed=0, legacy=False, src=None, n_jobs=4, verbose=True, strangers=None, 
             if strangers is not None:
                 train = ST.merge(train, strangers)
             Xtr, ytr, dropped = T.training_rows(train, ruleset=ruleset, seed=seed)
-            model = T.make_forest(seed, n_jobs=n_jobs)
+            model = None            # fit_letters below: the REST class is part of the recipe
         Xte, yte = test_rows(src[held][0], featfn)
         if not len(Xte):
             continue
-        model.fit(Xtr, ytr)
+        # --legacy reproduces a forest from before any of this existed, so it gets no REST
+        # class and no wrapper; that is what makes it a regression guard rather than a rerun.
+        model = model.fit(Xtr, ytr) if legacy else T.fit_letters(Xtr, ytr, seed, n_jobs)
         proba = np.zeros((len(Xte), NC))
         proba[:, model.classes_.astype(int)] = model.predict_proba(Xte)
         pred = proba.argmax(axis=1)

@@ -331,8 +331,8 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
     && /await watchdog\(createLandmarker\(vision, fileset\),\s*\n\s*'fetching the MediaPipe WASM from cdn\.jsdelivr\.net or the hand '\s*\n\s*\+ 'landmarker model from storage\.googleapis\.com'\)/.test(src)
     && !/watchdog\(vision\.FilesetResolver/.test(src) && !/loading the MediaPipe WASM/.test(src)
     && (src.match(/await watchdog\(/g) || []).length === 5);
-  // 1,183,438 B of models.bin.gz + 965 B of models.meta.json under Pages' own gzip = 1,184,403 B
-  // on the wire, measured on the committed export; models.json would be 3,703,057 B at gzip -5.
+  // 1,183,438 B of models.bin.gz + 989 B of models.meta.json under Pages' own gzip = 1,184,427 B
+  // on the wire, measured on the committed export; models.json would be 3,703,083 B at gzip -5.
   check('the load line states the real size of what the page fetches',
     /fetching models\.bin\.gz and models\.meta\.json \(about 1\.18 MB, '\s*\n\s*\+ 'already compressed, cached after the first time\)/.test(src)
     && /fetching golden\.json \(the self-check cases\)/.test(src));
@@ -467,9 +467,10 @@ for (const fps of [15, 30]) {
     && /five signers nothing here is ever\s+trained on, reads 0\.889/.test(html)
     && /The author's own folds are higher and they are not yours/.test(html));
   // The runtime row, from replay_strangers.py over temporal/openhands_replay.json: 266 clips,
-  // 96 exact, 170 silent, ZERO wrong letters. The zero is the claim worth pinning.
+  // 94 exact, 172 silent, ZERO wrong letters at every tracking and duration cut. The zero is
+  // the claim worth pinning: silence is the design, a wrong letter is the defect.
   check('...and states the end-to-end video result with its zero wrong letters',
-    /266 video clips of other people fingerspelling gave the right letter on 96, the wrong\s+letter on none, and silence on the other 170/.test(html));
+    /266 video clips of other people fingerspelling gave the right letter on 94, the wrong\s+letter on none, and silence on the other 172/.test(html));
   // The weak letters are the ones crossval_signers.py (U 0.671 as R, R 0.703 as U, C 0.816,
   // S 0.814) and crossval_static.py (cross-day fold: M 0.12) print.
   check('index.html names the weak letters on both folds',
@@ -492,7 +493,7 @@ for (const fps of [15, 30]) {
   const p = predictProba(prepared.static, golden.cases[firstStatic].static_feature);
   const appSrc = readFileSync(join(HERE, 'app.js'), 'utf8');
   check('predictProba returns one probability per class', p.length === models.static.classes.length);
-  // The page fetches the binary pair, not the 20,361,559 B models.json that this file still
+  // The page fetches the binary pair, not the 20,361,576 B models.json that this file still
   // reads off disk as the readable reference. forest.js decides by the bytes, not the name, and
   // returns the identical object either way -- test_forest.mjs is what proves that, node by node.
   check('loadModels fetches the binary pair, and is the only model fetch in app.js',

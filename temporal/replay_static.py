@@ -102,7 +102,7 @@ def fold_models(src, seed, henry_only, n_jobs, author_cap=None, aslhg=True):
         if strangers is not None:
             train = ST.merge(train, strangers)
         X, y, _ = T.training_rows(train, seed=seed)
-        models[held] = T.make_forest(seed, n_jobs=n_jobs).fit(X, y)
+        models[held] = T.fit_letters(X, y, seed, n_jobs)
     return models
 
 

@@ -1347,15 +1347,13 @@
   ],
   "fps": 25.0,
   "dur": 2.48,
-  "emitted": [
-   "G"
-  ],
-  "exact": true,
-  "among": true,
+  "emitted": [],
+  "exact": false,
+  "among": false,
   "first_wrong": false,
-  "silent": false,
+  "silent": true,
   "wrong": 0,
-  "latency": 1.72
+  "latency": null
  },
  {
   "letter": "H",
@@ -2871,15 +2869,13 @@
   ],
   "fps": 25.0,
   "dur": 0.8,
-  "emitted": [
-   "Q"
-  ],
-  "exact": true,
-  "among": true,
+  "emitted": [],
+  "exact": false,
+  "among": false,
   "first_wrong": false,
-  "silent": false,
+  "silent": true,
   "wrong": 0,
-  "latency": 0.72
+  "latency": null
  },
  {
   "letter": "Q",
@@ -4501,7 +4497,7 @@
   "first_wrong": false,
   "silent": false,
   "wrong": 0,
-  "latency": 1.56
+  "latency": 1.76
  },
  {
   "letter": "G",

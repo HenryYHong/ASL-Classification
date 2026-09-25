@@ -218,7 +218,7 @@ def gate_recipe(seeds, trees=None, leaf=None, author_cap=None, aslhg_cap=None, s
               f"RF({forest['n_estimators']}, min_samples_leaf={forest['min_samples_leaf']})")
         for seed in range(seeds):
             X, y, _ = T.training_rows(per, seed=seed)
-            model = T.make_forest(seed, n_jobs=n_jobs).fit(X, y)
+            model = T.fit_letters(X, y, seed, n_jobs)
             got = gate(model, T.FEATFN, T.LETTERS, th=th, holds=holds)
             out.append((seed, got, T.node_count(model)))
             eh, nh, ev, nv, maxp, letters = got
