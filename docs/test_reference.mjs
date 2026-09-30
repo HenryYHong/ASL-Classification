@@ -134,8 +134,6 @@ const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 check('index.html hosts the chart', /id="refchart"/.test(html) && /id="reftoggle"/.test(html));
 check('app.js builds it and highlights emissions',
   /buildChart/.test(app) && /chart\.highlight\(em\.letter\)/.test(app));
-check('the note admits the drawings are flat and one signer',
-  /These are my hands/.test(html) && /flat/.test(html));
 
 console.log(`\n${pass} pass, ${fail} FAIL`);
 process.exit(fail ? 1 : 0);

@@ -221,7 +221,6 @@
     border-radius: 999px; padding: 3px 10px; cursor: pointer;
   }
   #reftoggle:hover { color: var(--ink); border-color: var(--tick); }
-  #refnote { color: var(--dim); font-size: 11.5px; line-height: 1.45; margin: 5px 0 0; }
   #refchart {
     display: grid; gap: 10px; margin-top: 12px;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -360,10 +359,6 @@
       <h2>The alphabet</h2>
       <button id="reftoggle" type="button" aria-expanded="true" aria-controls="refchart">Hide</button>
     </div>
-    <p id="refnote" title="The hands come from the medoid of each letter's training frames, so the chart shows the shape the classifier is actually looking for rather than an artist's idea of it. Because the drawings are flat projections, the six fists look alike and the sideways letters look foreshortened; the sentence under each letter is what separates them. J and Z move, and the hand shown is where the movement starts.">
-      Drawn from the landmarks the model was trained on. These are my hands, flat, at the
-      angle they were held. The sentence under each letter is what a flat drawing cannot show.
-    </p>
     <div id="refchart"></div>
   </section>
 
