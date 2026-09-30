@@ -94,8 +94,14 @@ check('a cell is an svg plus a caption',
 // drew. A hand that loses a finger here is a hand that lost a landmark chain.
 check('a hand is one palm and five fingers',
   first.querySelectorAll('polygon').length === 1 && first.querySelectorAll('polyline').length === 5);
-check('no bare joints or bones are drawn (it must not read as an x-ray)',
-  first.querySelectorAll('circle').length === 0 && first.querySelectorAll('line').length === 0);
+// The landmarks are drawn INSIDE the silhouette, not instead of it. Both layers have to be
+// there: the silhouette alone is a mitten, the graph alone is an x-ray.
+check('the MediaPipe graph is drawn inside the silhouette',
+  first.querySelectorAll('circle').length === 21 && first.querySelectorAll('line').length === 23);
+// Order matters: SVG paints in document order, so the silhouette must come before the graph or
+// it covers it. Checking the first child is the palm is the cheapest way to pin that.
+check('the silhouette is painted before the graph',
+  first.querySelector('svg').children[0].tagName.toLowerCase() === 'polygon');
 check('only the moving letters draw a trail',
   [...host.children].filter((c) => c.querySelector('.trail')).length === 2);
 

@@ -23,9 +23,19 @@ const FINGERS = [
   [13, 14, 15, 16],    // ring
   [17, 18, 19, 20],    // pinky
 ];
-//: The palm slab: wrist, then across the knuckles and back. Drawn filled and behind the
-//: fingers so the joins disappear into it.
-const PALM = [0, 17, 13, 9, 5];
+//: The palm slab. Through the thumb's CMC rather than straight across the knuckles, because a
+//: hand's palm includes the muscle at the base of the thumb; without it the silhouette is a
+//: narrow bar with five sausages on it.
+const PALM = [0, 1, 5, 9, 13, 17];
+//: Every bone, for the skeleton drawn INSIDE the silhouette.
+const BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
+];
 
 /** Fit the 21 points into a `size` box with padding, preserving aspect. */
 function fit(lm, size, pad) {
@@ -42,9 +52,17 @@ function fit(lm, size, pad) {
   return lm.map((p) => [ox + (p[0] - x0) * s, oy + (p[1] - y0) * s]);
 }
 
-/** One <svg> hand. `motion` draws the trail marker J and Z need. */
-export function handSvg(lm, { size = 84, motion = false } = {}) {
-  const p = fit(lm, size, 11);
+/**
+ * One <svg> hand: a filled silhouette with the landmarks drawn inside it.
+ *
+ * The silhouette is what makes it read as a hand -- a palm slab through the wrist, the thumb's
+ * base and the four knuckles, with each finger laid over it as a round-capped capsule, all one
+ * colour so the joins disappear. The skeleton on top is the actual MediaPipe graph, which is
+ * the point of the chart: these are the 21 points the classifier sees, not an artist's idea of
+ * the letter. Drawn alone it reads as an x-ray; drawn inside the hand it reads as a diagram.
+ */
+export function handSvg(lm, { size = 96, motion = false } = {}) {
+  const p = fit(lm, size, 15);
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
@@ -52,27 +70,34 @@ export function handSvg(lm, { size = 84, motion = false } = {}) {
   svg.setAttribute("height", String(size));
   svg.setAttribute("aria-hidden", "true");
   const at = (i) => `${p[i][0].toFixed(2)},${p[i][1].toFixed(2)}`;
+  const add = (tag, cls, attrs) => {
+    const el = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    el.setAttribute("class", cls);
+    svg.appendChild(el);
+    return el;
+  };
 
-  // Palm first, so the finger capsules overlap it and the joins vanish.
-  const palm = document.createElementNS(ns, "polygon");
-  palm.setAttribute("points", PALM.map(at).join(" "));
-  palm.setAttribute("class", "palm");
-  svg.appendChild(palm);
-
+  // 1. the silhouette, palm first so the finger capsules overlap it
+  add("polygon", "palm", { points: PALM.map(at).join(" ") });
   for (const chain of FINGERS) {
-    const f = document.createElementNS(ns, "polyline");
-    // Start the capsule at the knuckle's parent so the finger reads as joined to the palm.
     const from = chain[0] === 1 ? 0 : chain[0];
-    f.setAttribute("points", [from, ...chain].map(at).join(" "));
-    f.setAttribute("class", "finger");
-    svg.appendChild(f);
+    add("polyline", "finger", { points: [from, ...chain].map(at).join(" ") });
+  }
+
+  // 2. the landmarks, inside it
+  for (const [a, b] of BONES) {
+    add("line", "bone", { x1: p[a][0].toFixed(2), y1: p[a][1].toFixed(2),
+                          x2: p[b][0].toFixed(2), y2: p[b][1].toFixed(2) });
+  }
+  for (let i = 0; i < p.length; i++) {
+    add("circle", "joint", { cx: p[i][0].toFixed(2), cy: p[i][1].toFixed(2), r: "1.9" });
   }
 
   if (motion) {
-    const a = document.createElementNS(ns, "path");
-    a.setAttribute("d", `M ${(size * 0.60).toFixed(1)} ${(size * 0.82).toFixed(1)} q ${(size * 0.16).toFixed(1)} ${(size * 0.11).toFixed(1)} ${(size * 0.27).toFixed(1)} ${(-size * 0.05).toFixed(1)}`);
-    a.setAttribute("class", "trail");
-    svg.appendChild(a);
+    add("path", "trail", { d: `M ${(size * 0.60).toFixed(1)} ${(size * 0.84).toFixed(1)} `
+      + `q ${(size * 0.16).toFixed(1)} ${(size * 0.11).toFixed(1)} `
+      + `${(size * 0.27).toFixed(1)} ${(-size * 0.05).toFixed(1)}` });
   }
   return svg;
 }
