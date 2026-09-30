@@ -287,14 +287,14 @@ function close(a, b, tol) { return Math.abs(a - b) <= tol; }
   // never shipped).
   const text = html.replace(/&ndash;/g, '-').replace(/\s+/g, ' ');
   check('index.html carries the numbers-mode provenance, verbatim',
-    text.includes('Numbers mode (experimental) reads the ASL digits 0-9 with a separate forest trained on '
-      + '218 signers from a public dataset (Sign Language Digits Dataset, Ankara Ayranci Anadolu High '
-      + 'School, Apache-2.0), not on the author. It has not been verified on the author\'s hand or on '
-      + 'live video: 0.986 leave-signer-out on that dataset\'s photos, and 96% of the author\'s O, V, '
-      + 'W, F and B frames read as 0, 2, 6, 9 and 4. J and Z are off in this mode, and a relaxed hand '
-      + 'can read as 0 or 1.'));
+    text.includes('Numbers mode is experimental. It reads the ASL digits 0-9 with a separate forest '
+      + 'trained on 218 signers from a public dataset (Sign Language Digits Dataset, Ankara Ayranci '
+      + 'Anadolu High School, Apache-2.0), and never on me. I have not checked it on my own hand or '
+      + 'on live video. It scores 0.986 leave-signer-out on that dataset\'s photos, and 96% of my own '
+      + 'O, V, W, F and B frames read as 0, 2, 6, 9 and 4. J and Z are off in this mode, and a '
+      + 'relaxed hand can read as 0 or 1.'));
   check('...and the shipped digit forest\'s idle rate, one in six',
-    text.includes('a relaxed hand reads as a digit (mostly 0 or 1) about one time in six in this mode')
+    text.includes('a relaxed hand reads as a digit, usually 0 or 1, about one time in six')
     && !/about a quarter/.test(text));
   check('the Numbers button ships disabled, is disabled at boot and on a blocking problem, and is '
         + 'enabled once the letters segmenter is built',
@@ -434,8 +434,12 @@ for (const fps of [15, 30]) {
 {
   const src = readFileSync(join(HERE, 'app.js'), 'utf8');
   const html = readFileSync(join(HERE, 'index.html'), 'utf8');
+  // The prose assertions below run against a whitespace-collapsed copy. Pinning a sentence
+  // to the line it happens to wrap on makes every reword a failure about nothing, which is
+  // how a pin stops being read and starts being reflexively updated. The claim is the words.
+  const flat = html.replace(/\s+/g, ' ');
   const ids = [...src.matchAll(/el\('([a-zA-Z]+)'\)/g)].map((m) => m[1]);
-  const missing = ids.filter((id) => !new RegExp(`id="${id}"`).test(html));
+  const missing = ids.filter((id) => !new RegExp(`id="${id}"`).test(flat));
   check(`all ${ids.length} element ids exist in index.html`, missing.length === 0,
     missing.length ? `missing ${missing.join(', ')}` : '');
   // The accuracy numbers are the ones crossval_static.py / crossval_signers.py /
@@ -445,46 +449,47 @@ for (const fps of [15, 30]) {
   // number one of those harnesses printed: pooled 0.926 (4,515/4,878) and cross-day 0.895 at
   // seed 0, bootstrap interval [0.877, 0.965] over the 57 session x letter bursts.
   check('index.html states the measured accuracies with the interval',
-    /0\.926 of 4,878 held-out frames/.test(html) && /0\.877(&ndash;|-)0\.965/.test(html)
-    && /0\.895 on the one fold recorded on a different day/.test(html)
-    && /other people's hands from\s+three public/.test(html));
+    /0\.926 of 4,878 held-out frames/.test(flat) && /0\.877(&ndash;|-)0\.965/.test(flat)
+    && /0\.895 on the one session I recorded on a different day/.test(flat)
+    && /other people's hands from three public/.test(flat));
   // The three-seed spread beside the published figure: crossval_static.py seeds 0-2 on the
   // shipped recipe give 0.8949 / 0.8848 / 0.8894 on the cross-day fold, and the J/Z figure
   // counts events, not gestures: 102 events = 74 J/Z gestures + 28 movements over 80 items.
   check('...with the three-seed spread beside the cross-day figure and the J/Z events itemized',
-    /\(0\.8848(&ndash;|-)0\.8949 over three seeds\)/.test(html)
-    && /J and Z: 0\.95 over 102 events \(74 J\/Z gestures and 28 movements\) in 80 prompted items/.test(html));
+    /\(0\.8848(&ndash;|-)0\.8949 over three seeds\)/.test(flat)
+    && /J and Z: 0\.95 over 102 events \(74 J\/Z gestures and 28 movements\) in 80 prompted items/.test(flat));
   // What a visitor should plan around is now MEASURED BY SIGNER, not bounded: crossval_signers.py
   // holds out one of ten named signers at a time (0.9406 over three seeds, 0.9379-0.9453), and
   // crossval_strangers.py holds out a whole second set (0.8292 over three seeds, 0.8212-0.8362)
   // and scores the permanent never-train holdout (0.889). The page must lead with those and say
   // plainly that the author's own folds are not a visitor's number.
-  check('index.html leads with the by-signer numbers, not the author\'s own fold',
-    /If you are not the author, the numbers to plan around are\s+the ones measured by holding out other people/.test(html)
-    && /ten named signers: 0\.9406 across three seeds \(0\.9379(&ndash;|-)0\.9453\)/.test(html)
-    && /1,874\s+frames from multiple participants captured with this page's own landmarker/.test(html)
-    && /0\.8292\s+across three seeds \(0\.8212(&ndash;|-)0\.8362\)/.test(html)
-    && /five signers nothing here is ever\s+trained on, reads 0\.889/.test(html)
-    && /The author's own folds are higher and they are not yours/.test(html));
+  check('index.html leads with the by-signer numbers, not my own fold',
+    /If you are not me, the numbers worth trusting are the ones measured by holding other people out/.test(flat)
+    && /across ten named signers, it gets 0\.9406 across three seeds \(0\.9379(&ndash;|-)0\.9453\)/.test(flat)
+    && /1,874 frames from several people recorded with this page's own landmarker/.test(flat)
+    && /0\.8292 across three seeds \(0\.8212(&ndash;|-)0\.8362\)/.test(flat)
+    && /five signers that nothing here ever trains on reads 0\.889/.test(flat)
+    && /My own sessions score higher, and that number is not yours/.test(flat));
   // The runtime row, from replay_strangers.py over temporal/openhands_replay.json: 266 clips,
   // 94 exact, 172 silent, ZERO wrong letters at every tracking and duration cut. The zero is
   // the claim worth pinning: silence is the design, a wrong letter is the defect.
   check('...and states the end-to-end video result with its zero wrong letters',
-    /266 video clips of other people fingerspelling gave the right letter on 94, the wrong\s+letter on none, and silence on the other 172/.test(html));
+    /266 clips of other people fingerspelling gave the right letter on 94, the wrong letter on none, and silence on the other 172/.test(flat));
   // The weak letters are the ones crossval_signers.py (U 0.671 as R, R 0.703 as U, C 0.816,
   // S 0.814) and crossval_static.py (cross-day fold: M 0.12) print.
   check('index.html names the weak letters on both folds',
-    /the author's M is read on about one frame in eight/.test(html)
-    && /on other people's hands U and R are read as each\s+other, with C, S and G next least reliable/.test(html));
+    /my own M is read on about one frame in eight/.test(flat)
+    && /on other people's hands U and R are read as each other, with C, S and G next least reliable/.test(flat));
   check('...labels the previous release\'s numbers as previous',
-    /previous\s+release measured 0\.910 and 0\.870 on the author's folds and had no by-signer number at all/.test(html)
-    && /replaces rather than improves on the earlier 0\.864/.test(html));
-  check('index.html says fingerspelling only', /no ASL word signs, no grammar/i.test(html));
+    /release before this one measured 0\.910 and 0\.870 on my sessions and had no by-signer number at all/.test(flat)
+    && /replaces rather than improves on the earlier 0\.864/.test(flat));
+  check('index.html says fingerspelling only', /no word signs and no grammar/i.test(flat));
   check('index.html explains the word break, common words first',
-    /drop your hand for a second/i.test(html) && /common words first, from a frequency list/.test(html));
+    /drop your hand for a second/i.test(flat)
+    && /If one real word clearly fits the letters I show it underneath/.test(flat));
   check('the lede claims numbers mode only as experimental',
-    /26 letters, plus an experimental numbers mode/.test(html));
-  check('American spelling', !/centre|colour|recognise|behaviour|analyse/.test(html));
+    /26 letters, plus an experimental numbers mode/.test(flat));
+  check('American spelling', !/centre|colour|recognise|behaviour|analyse/.test(flat));
 }
 
 // The loaded-through-fetch path forest.js provides is what the page calls; confirm the shape it
