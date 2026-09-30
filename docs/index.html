@@ -152,7 +152,14 @@
   }
   button:hover { border-color: var(--accent); color: var(--accent); }
   button:disabled { opacity: .45; cursor: default; border-color: var(--btn-line); color: var(--ink); }
-  #loadstate { color: var(--dim); font-size: 13px; min-height: 1.2em; }
+  /* The curtain centers this as a block, but the block runs the full width of the frame, so
+     a line long enough to wrap starts hard against the left edge. Center the text too, and
+     cap the measure so the ready line wraps somewhere sensible instead of edge to edge. */
+  #loadstate {
+    color: var(--dim); font-size: 13px; min-height: 1.2em;
+    text-align: center; text-wrap: balance;
+    max-width: min(54ch, 88%); margin: 0 auto;
+  }
 
   /* ---- output ---- */
   #outbar {
