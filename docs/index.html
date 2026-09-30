@@ -241,11 +241,8 @@
      span, which is roughly where a real one sits. The palm is drawn wider still so the bases
      of the fingers merge into it instead of standing off it like sausages. */
   .refcell .palm { fill: var(--hand); stroke: var(--hand); stroke-width: 19; stroke-linejoin: round; }
-  /* No stroke-width here: reference.js sets it per bone, because a thumb is not a little
-     finger and a fingertip is not a knuckle. Colour and caps stay in CSS so the chart still
-     follows the theme. */
   .refcell .finger {
-    fill: none; stroke: var(--hand);
+    fill: none; stroke: var(--hand); stroke-width: 15;
     stroke-linecap: round; stroke-linejoin: round;
   }
   /* The MediaPipe graph, drawn INSIDE the silhouette: these are the 21 points the classifier

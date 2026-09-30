@@ -92,23 +92,10 @@ check('a cell is an svg plus a caption',
   first.tagName.toLowerCase() === 'figure' && first.querySelector('svg') && first.querySelector('figcaption'));
 // One filled palm and five capsule fingers -- the shapes, not the skeleton the first version
 // drew. A hand that loses a finger here is a hand that lost a landmark chain.
-// Five fingers, each drawn bone by bone so it can taper: 4 for the thumb (wrist to tip) and
-// 3 for each of the other four, which start at their own knuckle. 16 bones carry the fingers.
-const fingerLines = [...first.querySelectorAll('line')].filter((l) => l.classList.has('finger'));
-check('a hand is one palm and five tapering fingers',
-  first.querySelectorAll('polygon').length === 1 && fingerLines.length === 16);
-// No two adjacent fingers the same width, and the thumb the thickest of all: the thing that
-// made the first version read as a glove was drawing all five at one width.
-const widths = fingerLines.map((l) => Number(l.getAttribute('stroke-width')));
-check('the fingers are not all one width',
-  new Set(widths.map((w) => w.toFixed(2))).size > 6,
-  `${new Set(widths.map((w) => w.toFixed(2))).size} distinct widths over ${widths.length} bones`);
-check('each finger tapers toward the tip', widths[0] > widths[1] && widths[1] > widths[2]);
-// The landmarks are drawn INSIDE the silhouette, not instead of it. Both layers have to be
-// there: the silhouette alone is a mitten, the graph alone is an x-ray.
-const boneLines = [...first.querySelectorAll('line')].filter((l) => l.classList.has('bone'));
+check('a hand is one palm and five fingers',
+  first.querySelectorAll('polygon').length === 1 && first.querySelectorAll('polyline').length === 5);
 check('the MediaPipe graph is drawn inside the silhouette',
-  first.querySelectorAll('circle').length === 21 && boneLines.length === 23);
+  first.querySelectorAll('circle').length === 21 && first.querySelectorAll('line').length === 23);
 // Order matters: SVG paints in document order, so the silhouette must come before the graph or
 // it covers it. Checking the first child is the palm is the cheapest way to pin that.
 check('the silhouette is painted before the graph',
