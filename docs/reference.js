@@ -16,13 +16,21 @@
 
 //: MediaPipe's landmark order is fixed: 0 wrist, 1-4 thumb, 5-8 index, 9-12 middle,
 //: 13-16 ring, 17-20 pinky. These chains are a property of the landmarker, not of this data.
+//: Each finger's chain, and how thick it is relative to the base width. A hand is not five
+//: identical rods: the thumb is much the thickest, middle and index are close behind it, the
+//: ring is slightly slimmer and the little finger is noticeably so. Drawing them all one width
+//: is most of what made the first version read as a cartoon glove.
 const FINGERS = [
-  [1, 2, 3, 4],        // thumb
-  [5, 6, 7, 8],        // index
-  [9, 10, 11, 12],     // middle
-  [13, 14, 15, 16],    // ring
-  [17, 18, 19, 20],    // pinky
+  { chain: [1, 2, 3, 4], w: 1.24 },      // thumb
+  { chain: [5, 6, 7, 8], w: 1.02 },      // index
+  { chain: [9, 10, 11, 12], w: 1.06 },   // middle
+  { chain: [13, 14, 15, 16], w: 0.95 },  // ring
+  { chain: [17, 18, 19, 20], w: 0.80 },  // pinky
 ];
+//: Base stroke in viewBox units, and how much each successive bone narrows toward the tip.
+//: A real finger tapers; a polyline cannot, so each finger is drawn bone by bone instead.
+const FINGER_BASE = 15;
+const TAPER = 0.87;
 //: The palm slab. Through the thumb's CMC rather than straight across the knuckles, because a
 //: hand's palm includes the muscle at the base of the thumb; without it the silhouette is a
 //: narrow bar with five sausages on it.
@@ -78,11 +86,24 @@ export function handSvg(lm, { size = 96, motion = false } = {}) {
     return el;
   };
 
-  // 1. the silhouette, palm first so the finger capsules overlap it
+  // 1. the silhouette, palm first so the finger capsules overlap it. Widths are set here
+  // rather than in CSS because they are geometry, not theme: the colour stays in the
+  // stylesheet so the chart still follows the light and dark switch.
   add("polygon", "palm", { points: PALM.map(at).join(" ") });
-  for (const chain of FINGERS) {
-    const from = chain[0] === 1 ? 0 : chain[0];
-    add("polyline", "finger", { points: [from, ...chain].map(at).join(" ") });
+  const scale = size / 96;
+  for (const { chain, w } of FINGERS) {
+    // The thumb is drawn from the wrist so its base merges into the palm; the other four start
+    // at their own knuckle, which the palm slab already reaches. Prefixing chain[0] here would
+    // emit a zero-length bone and shift the taper by one joint.
+    const pts = chain[0] === 1 ? [0, ...chain] : chain;
+    for (let j = 0; j < pts.length - 1; j++) {
+      // Round caps on every bone, so the segments of a tapering finger blend into one shape.
+      add("line", "finger", {
+        x1: p[pts[j]][0].toFixed(2), y1: p[pts[j]][1].toFixed(2),
+        x2: p[pts[j + 1]][0].toFixed(2), y2: p[pts[j + 1]][1].toFixed(2),
+        "stroke-width": (FINGER_BASE * w * scale * TAPER ** j).toFixed(2),
+      });
+    }
   }
 
   // 2. the landmarks, inside it
